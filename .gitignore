@@ -5,4 +5,6 @@ __pycache__/
 *.xlsx
 *.xls
 *.csv
+!data/*.xlsx
+!data/*.csv
 .env

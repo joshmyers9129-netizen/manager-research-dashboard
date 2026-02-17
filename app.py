@@ -1559,51 +1559,87 @@ if not HAS_SM: mpk.append("statsmodels")
 if not HAS_FPDF: mpk.append("fpdf2")
 if mpk: sb.warning(f"Optional: `pip install {' '.join(mpk)}`")
 
-sb.header("1 \u00b7 Upload Data")
-sf_fmt = sb.selectbox("Strategy format", ["eVestment Compare Export", "Clean Template (Excel/CSV)"])
-sf_file = sb.file_uploader("Strategy file", type=["xlsx","xls","csv"], key="up_s")
-ff_fmt = sb.selectbox("Factor format", ["Multiple Risk Premiums Export", "Clean Template (Excel/CSV)"])
-ff_file = sb.file_uploader("Factor file", type=["xlsx","xls","csv"], key="up_f")
+# ── Auto-load embedded data on first run ─────────────────────────────────────
+_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+_EMBED_STRAT = os.path.join(_DATA_DIR, "strategies.xlsx")
+_EMBED_FACTOR = os.path.join(_DATA_DIR, "factors.xlsx")
 
-if sb.button("\U0001f504  Load & Parse Data", use_container_width=True, type="primary"):
-    if sf_file is not None:
+def _load_embedded():
+    """Load bundled data files if they exist and haven't been loaded yet."""
+    if st.session_state.get("strategy_df") is None and os.path.exists(_EMBED_STRAT):
         try:
-            tp = os.path.join(tempfile.gettempdir(), "mrd_s.xlsx")
-            with open(tp,"wb") as f: f.write(sf_file.getbuffer())
-            sdf = parse_evestment(tp) if sf_fmt=="eVestment Compare Export" else parse_clean_strategy(tp)
-            try: os.unlink(tp)
-            except OSError: pass
+            sdf = parse_evestment(_EMBED_STRAT)
             u, sdf["excess_return"] = _detect_units(sdf["excess_return"])
             sdf = _monthly(sdf)
             sdf["asset_class"] = sdf["benchmark"].apply(_classify) if "benchmark" in sdf.columns else "Unknown"
-            st.session_state["strategy_df"]=sdf; st.session_state["u_s"]=u
-            sb.success(f"\u2705 {sdf['strategy'].nunique()} strategies")
-        except Exception as e: sb.error(f"\u274c {e}")
-    else: sb.warning("Upload strategy file.")
-
-    if ff_file is not None:
+            st.session_state["strategy_df"] = sdf
+            st.session_state["u_s"] = u
+        except Exception:
+            pass
+    if st.session_state.get("factor_df") is None and os.path.exists(_EMBED_FACTOR):
         try:
-            tp = os.path.join(tempfile.gettempdir(), "mrd_f.xlsx")
-            with open(tp,"wb") as f: f.write(ff_file.getbuffer())
-            fdf = parse_risk_premiums(tp) if ff_fmt=="Multiple Risk Premiums Export" else parse_clean_factors(tp)
-            try: os.unlink(tp)
-            except OSError: pass
-            fc=[c for c in fdf.columns if c!="date"]
+            fdf = parse_risk_premiums(_EMBED_FACTOR)
+            fc = [c for c in fdf.columns if c != "date"]
             fu, _ = _detect_units(pd.concat([fdf[c] for c in fc]))
-            if fu=="percent":
-                for c in fc: fdf[c]=fdf[c]/100.0
-            fdf=_monthly(fdf)
-            st.session_state["factor_df"]=fdf; st.session_state["u_f"]=fu
-            sb.success(f"\u2705 {len(fc)} factors")
-        except Exception as e: sb.error(f"\u274c {e}")
-    else: sb.warning("Upload factor file.")
+            if fu == "percent":
+                for c in fc: fdf[c] = fdf[c] / 100.0
+            fdf = _monthly(fdf)
+            st.session_state["factor_df"] = fdf
+            st.session_state["u_f"] = fu
+        except Exception:
+            pass
 
+_load_embedded()
+
+# ── Sidebar: optional upload to override ─────────────────────────────────────
+sb.header("1 \u00b7 Data")
+if st.session_state.get("strategy_df") is not None and st.session_state.get("factor_df") is not None:
+    sb.success(f"\u2705 {st.session_state['strategy_df']['strategy'].nunique()} strategies loaded")
+    fc_count = len([c for c in st.session_state["factor_df"].columns if c != "date"])
+    sb.success(f"\u2705 {fc_count} factors loaded")
+
+with sb.expander("Upload new data (override)"):
+    sf_fmt = st.selectbox("Strategy format", ["eVestment Compare Export", "Clean Template (Excel/CSV)"], key="sb_sf_fmt")
+    sf_file = st.file_uploader("Strategy file", type=["xlsx","xls","csv"], key="up_s")
+    ff_fmt = st.selectbox("Factor format", ["Multiple Risk Premiums Export", "Clean Template (Excel/CSV)"], key="sb_ff_fmt")
+    ff_file = st.file_uploader("Factor file", type=["xlsx","xls","csv"], key="up_f")
+
+    if st.button("\U0001f504  Load & Parse", use_container_width=True, type="primary"):
+        if sf_file is not None:
+            try:
+                tp = os.path.join(tempfile.gettempdir(), "mrd_s.xlsx")
+                with open(tp,"wb") as f: f.write(sf_file.getbuffer())
+                sdf = parse_evestment(tp) if sf_fmt=="eVestment Compare Export" else parse_clean_strategy(tp)
+                try: os.unlink(tp)
+                except OSError: pass
+                u, sdf["excess_return"] = _detect_units(sdf["excess_return"])
+                sdf = _monthly(sdf)
+                sdf["asset_class"] = sdf["benchmark"].apply(_classify) if "benchmark" in sdf.columns else "Unknown"
+                st.session_state["strategy_df"]=sdf; st.session_state["u_s"]=u
+                st.success(f"\u2705 {sdf['strategy'].nunique()} strategies")
+            except Exception as e: st.error(f"\u274c {e}")
+
+        if ff_file is not None:
+            try:
+                tp = os.path.join(tempfile.gettempdir(), "mrd_f.xlsx")
+                with open(tp,"wb") as f: f.write(ff_file.getbuffer())
+                fdf = parse_risk_premiums(tp) if ff_fmt=="Multiple Risk Premiums Export" else parse_clean_factors(tp)
+                try: os.unlink(tp)
+                except OSError: pass
+                fc=[c for c in fdf.columns if c!="date"]
+                fu, _ = _detect_units(pd.concat([fdf[c] for c in fc]))
+                if fu=="percent":
+                    for c in fc: fdf[c]=fdf[c]/100.0
+                fdf=_monthly(fdf)
+                st.session_state["factor_df"]=fdf; st.session_state["u_f"]=fu
+                st.success(f"\u2705 {len(fc)} factors")
+            except Exception as e: st.error(f"\u274c {e}")
 
 strategy_df = st.session_state.get("strategy_df")
 factor_df = st.session_state.get("factor_df")
 
 if strategy_df is None and factor_df is None:
-    st.info("\U0001f448  Upload strategy & factor files in the sidebar, then click **Load & Parse Data**.")
+    st.info("\U0001f448  Upload strategy & factor files in the sidebar, then click **Load & Parse**.")
     st.stop()
 if strategy_df is None or factor_df is None:
     st.warning("Load both strategy and factor data to run analysis."); st.stop()
