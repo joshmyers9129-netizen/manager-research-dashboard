@@ -1,5 +1,5 @@
 """
-Manager Research Dashboard — Mariner
+Manager Research Dashboard
 ═════════════════════════════════════
 Production-quality factor regime analysis tool for manager evaluation.
 Single-file Streamlit app. Run:  streamlit run app.py
@@ -34,7 +34,7 @@ except ImportError:
 #  BRAND + FACTOR CONFIG
 # ═══════════════════════════════════════════════════════════════════════════════
 
-C = {  # Mariner color palette
+C = {  # Brand color palette
     "navy_dk": "#0A1628", "navy": "#0F2744", "navy_md": "#1B3A5C",
     "teal": "#2AA5A0", "teal_lt": "#3DBDB8",
     "cream": "#F5E6C8", "cream_lt": "#FAF3E6", "wh": "#FFFFFF",
@@ -911,8 +911,8 @@ def ch_explained(r2):
 #  PDF EXPORT ENGINE
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class MarinerPDF(FPDF if HAS_FPDF else object):
-    """Professional PDF with Mariner branding."""
+class ReportPDF(FPDF if HAS_FPDF else object):
+    """Professional landscape PDF report generator."""
     # Brand colors
     _NAVY = (15, 39, 68)
     _NAVY_MD = (27, 79, 114)
@@ -924,10 +924,14 @@ class MarinerPDF(FPDF if HAS_FPDF else object):
     _NEG = (217, 79, 79)
     _WH = (255, 255, 255)
     _GRID = (230, 234, 238)
+    # Landscape dimensions
+    PW = 297  # page width
+    PH = 210  # page height
+    M = 12    # margin
 
     def __init__(self, strategy="", benchmark="", window="", as_of=""):
         if not HAS_FPDF: return
-        super().__init__()
+        super().__init__(orientation="L", format="A4")
         self.strategy = strategy
         self.benchmark = benchmark
         self.window = window
@@ -936,52 +940,60 @@ class MarinerPDF(FPDF if HAS_FPDF else object):
         self.add_font("Arial", "B", r"C:\Windows\Fonts\arialbd.ttf")
         self.add_font("Arial", "I", r"C:\Windows\Fonts\ariali.ttf")
         self.add_font("Arial", "BI", r"C:\Windows\Fonts\arialbi.ttf")
-        self.set_auto_page_break(auto=True, margin=22)
+        self.set_auto_page_break(auto=True, margin=18)
+
+    @property
+    def cw(self):
+        """Content width (page minus margins)."""
+        return self.PW - 2 * self.M
 
     def header(self):
         self.set_fill_color(*self._NAVY)
-        self.rect(0, 0, 210, 11, "F")
+        self.rect(0, 0, self.PW, 10, "F")
         self.set_draw_color(*self._TEAL)
-        self.line(0, 11, 210, 11)
-        self.set_font("Arial", "B", 7.5)
+        self.line(0, 10, self.PW, 10)
+        self.set_font("Arial", "B", 7)
         self.set_text_color(*self._CREAM)
-        self.set_xy(10, 2.5)
-        self.cell(0, 6, "MARINER  |  Manager Research", align="L")
-        self.set_xy(120, 2.5)
-        self.set_font("Arial", "", 7)
-        self.cell(80, 6, f"{self.window}  |  {self.as_of}", align="R")
-        self.ln(13)
+        self.set_xy(self.M, 2)
+        self.cell(0, 6, "Manager Research  |  Factor Regime Analysis", align="L")
+        self.set_font("Arial", "", 6.5)
+        self.set_xy(self.PW - 100, 2)
+        self.cell(88, 6, f"{self.window}  |  {self.as_of}", align="R")
+        self.ln(12)
 
     def footer(self):
-        self.set_y(-15)
+        self.set_y(-13)
         self.set_draw_color(*self._GRID)
-        self.line(10, self.get_y(), 200, self.get_y())
+        self.line(self.M, self.get_y(), self.PW - self.M, self.get_y())
         self.ln(2)
-        self.set_font("Arial", "", 6.5)
+        self.set_font("Arial", "", 6)
         self.set_text_color(*self._NEUT)
-        self.cell(95, 4, f"{self.strategy}  |  {self.benchmark}", align="L")
-        self.cell(95, 4, f"Page {self.page_no()}", align="R")
+        hw = (self.cw) / 2
+        self.cell(hw, 3, f"{self.strategy}  |  {self.benchmark}", align="L")
+        self.cell(hw, 3, f"Page {self.page_no()}", align="R")
 
     def section_title(self, title):
-        self.set_font("Arial", "B", 12)
+        self.set_font("Arial", "B", 11)
         self.set_text_color(*self._NAVY)
-        self.cell(0, 9, title, new_x="LMARGIN", new_y="NEXT")
+        self.cell(0, 8, title, new_x="LMARGIN", new_y="NEXT")
         self.set_draw_color(*self._TEAL)
-        self.line(10, self.get_y(), 65, self.get_y())
+        self.line(self.M, self.get_y(), self.M + 55, self.get_y())
         self.ln(3)
 
     def body_text(self, text):
-        self.set_font("Arial", "", 9)
+        self.set_font("Arial", "", 8.5)
         self.set_text_color(*self._TXT)
         clean = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
         clean = re.sub(r'\*(.+?)\*', r'\1', clean)
-        self.multi_cell(0, 4.5, clean)
+        self.multi_cell(0, 4, clean)
         self.ln(1)
 
-    def add_chart(self, fig, w=180, h=80):
+    def add_chart(self, fig, w=None, h=None):
+        w = w or (self.cw)
+        h = h or 85
         if fig is None: return
         try:
-            imgb = fig.to_image(format="png", width=int(w*5.5), height=int(h*5.5), scale=2)
+            imgb = fig.to_image(format="png", width=int(w*5), height=int(h*5), scale=2)
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
                 f.write(imgb); tp = f.name
             self.image(tp, w=w)
@@ -994,44 +1006,36 @@ class MarinerPDF(FPDF if HAS_FPDF else object):
 
     # ── Summary page helpers ─────────────────────────────────────────────────
     def _kpi_box(self, x, y, w, label, value, sub, accent=None):
-        """Draw a single KPI card at (x, y) with width w."""
         accent = accent or self._TEAL
-        # Card background
         self.set_fill_color(*self._WH)
         self.set_draw_color(*self._GRID)
-        self.rect(x, y, w, 24, "DF")
-        # Accent bar
+        self.rect(x, y, w, 22, "DF")
         self.set_fill_color(*accent)
-        self.rect(x, y, w, 2, "F")
-        # Label
-        self.set_xy(x + 3, y + 4)
-        self.set_font("Arial", "B", 6)
+        self.rect(x, y, w, 2.5, "F")
+        self.set_xy(x + 4, y + 5)
+        self.set_font("Arial", "B", 6.5)
         self.set_text_color(*self._NEUT)
-        self.cell(w - 6, 3, label.upper())
-        # Value
-        self.set_xy(x + 3, y + 9)
-        self.set_font("Arial", "B", 14)
+        self.cell(w - 8, 3, label.upper())
+        self.set_xy(x + 4, y + 9.5)
+        self.set_font("Arial", "B", 15)
         self.set_text_color(*self._NAVY)
-        self.cell(w - 6, 7, value)
-        # Sub
-        self.set_xy(x + 3, y + 17.5)
+        self.cell(w - 8, 6, value)
+        self.set_xy(x + 4, y + 17)
         self.set_font("Arial", "", 6.5)
         self.set_text_color(*self._NEUT)
-        self.cell(w - 6, 3, sub)
+        self.cell(w - 8, 3, sub)
 
     def _factor_row(self, y, name, direction, top_label, top_bps, top_hit,
                     bot_label, bot_bps, bot_hit, significant):
-        """Draw a factor regime row at vertical position y."""
-        # Background
+        row_w = self.cw
         self.set_fill_color(*self._WH)
         self.set_draw_color(*self._GRID)
-        self.rect(10, y, 190, 22, "DF")
-        # Factor name + badge
-        self.set_xy(13, y + 2)
+        self.rect(self.M, y, row_w, 20, "DF")
+        # Left: factor name + direction
+        self.set_xy(self.M + 4, y + 2)
         self.set_font("Arial", "B", 9)
         self.set_text_color(*self._NAVY)
-        self.cell(60, 5, name)
-        # Sig badge
+        self.cell(70, 5, name)
         self.set_font("Arial", "", 6)
         if significant:
             self.set_text_color(*self._TEAL)
@@ -1039,91 +1043,88 @@ class MarinerPDF(FPDF if HAS_FPDF else object):
         else:
             self.set_text_color(*self._NEUT)
             self.cell(30, 5, "NOT SIGNIFICANT")
-        # Direction
-        self.set_xy(13, y + 7.5)
-        self.set_font("Arial", "", 7.5)
+        self.set_xy(self.M + 4, y + 8)
+        self.set_font("Arial", "", 7)
         self.set_text_color(*self._NEUT)
-        self.cell(80, 4, direction)
+        self.cell(120, 4, direction)
         # Top quartile box
-        bx1 = 100
-        self.set_fill_color(230, 248, 247)  # light teal bg
-        self.rect(bx1, y + 2, 45, 18, "F")
-        self.set_xy(bx1 + 2, y + 3)
+        bx1 = self.M + row_w - 120
+        self.set_fill_color(230, 248, 247)
+        self.rect(bx1, y + 2, 55, 16, "F")
+        self.set_xy(bx1 + 3, y + 3)
         self.set_font("Arial", "B", 5.5)
         self.set_text_color(*self._TEAL)
-        self.cell(41, 3, top_label.upper())
-        self.set_xy(bx1 + 2, y + 7.5)
-        self.set_font("Arial", "B", 11)
-        self.cell(41, 5, f"{top_bps:+.0f} bps/mo")
-        self.set_xy(bx1 + 2, y + 14)
-        self.set_font("Arial", "", 6)
+        self.cell(49, 3, top_label.upper()[:40])
+        self.set_xy(bx1 + 3, y + 7)
+        self.set_font("Arial", "B", 12)
+        self.cell(49, 5, f"{top_bps:+.0f} bps/mo")
+        self.set_xy(bx1 + 3, y + 13)
+        self.set_font("Arial", "", 5.5)
         self.set_text_color(*self._NEUT)
-        self.cell(41, 3, f"{top_hit:.0f}% months positive" if top_hit is not None else "")
+        self.cell(49, 3, f"{top_hit:.0f}% months positive" if top_hit is not None else "")
         # Bottom quartile box
-        bx2 = 150
-        self.set_fill_color(253, 237, 237)  # light red bg
-        self.rect(bx2, y + 2, 45, 18, "F")
-        self.set_xy(bx2 + 2, y + 3)
+        bx2 = bx1 + 60
+        self.set_fill_color(253, 237, 237)
+        self.rect(bx2, y + 2, 55, 16, "F")
+        self.set_xy(bx2 + 3, y + 3)
         self.set_font("Arial", "B", 5.5)
         self.set_text_color(*self._NEG)
-        self.cell(41, 3, bot_label.upper())
-        self.set_xy(bx2 + 2, y + 7.5)
-        self.set_font("Arial", "B", 11)
-        self.cell(41, 5, f"{bot_bps:+.0f} bps/mo")
-        self.set_xy(bx2 + 2, y + 14)
-        self.set_font("Arial", "", 6)
+        self.cell(49, 3, bot_label.upper()[:40])
+        self.set_xy(bx2 + 3, y + 7)
+        self.set_font("Arial", "B", 12)
+        self.cell(49, 5, f"{bot_bps:+.0f} bps/mo")
+        self.set_xy(bx2 + 3, y + 13)
+        self.set_font("Arial", "", 5.5)
         self.set_text_color(*self._NEUT)
-        self.cell(41, 3, f"{bot_hit:.0f}% months positive" if bot_hit is not None else "")
+        self.cell(49, 3, f"{bot_hit:.0f}% months positive" if bot_hit is not None else "")
 
     def _quarter_box(self, x, y, w, label, period, ret, drivers, is_best=True):
-        """Draw a best/worst quarter card."""
         accent = self._TEAL if is_best else self._NEG
         self.set_fill_color(*self._WH)
         self.set_draw_color(*self._GRID)
         self.rect(x, y, w, 22, "DF")
         self.set_fill_color(*accent)
-        self.rect(x, y, w, 2, "F")
-        self.set_xy(x + 3, y + 4)
-        self.set_font("Arial", "B", 6)
+        self.rect(x, y, w, 2.5, "F")
+        self.set_xy(x + 4, y + 5)
+        self.set_font("Arial", "B", 6.5)
         self.set_text_color(*accent)
-        self.cell(w - 6, 3, label.upper())
-        self.set_xy(x + 3, y + 8.5)
-        self.set_font("Arial", "B", 12)
+        self.cell(w - 8, 3, label.upper())
+        self.set_xy(x + 4, y + 9.5)
+        self.set_font("Arial", "B", 13)
         self.set_text_color(*accent)
-        self.cell(30, 5, f"{ret:+.1%}")
-        self.set_font("Arial", "B", 8)
+        self.cell(35, 5, f"{ret:+.1%}")
+        self.set_font("Arial", "B", 9)
         self.set_text_color(*self._NAVY)
-        self.cell(w - 36, 5, period, align="R")
-        self.set_xy(x + 3, y + 15.5)
+        self.cell(w - 43, 5, period, align="R")
+        self.set_xy(x + 4, y + 16)
         self.set_font("Arial", "", 6.5)
         self.set_text_color(*self._NEUT)
-        self.cell(w - 6, 3, drivers[:80])
+        self.cell(w - 8, 3, drivers[:100])
 
     def _outlook_box(self, x, y, w, h, label, text, dark=False):
-        """Draw an outlook card."""
         if dark:
             self.set_fill_color(*self._NAVY)
             self.rect(x, y, w, h, "F")
-            self.set_xy(x + 4, y + 3)
-            self.set_font("Arial", "B", 6)
+            self.set_xy(x + 5, y + 3)
+            self.set_font("Arial", "B", 6.5)
             self.set_text_color(*self._TEAL)
-            self.cell(w - 8, 3, label.upper())
-            self.set_xy(x + 4, y + 9)
+            self.cell(w - 10, 3, label.upper())
+            self.set_xy(x + 5, y + 9)
             self.set_font("Arial", "", 8)
             self.set_text_color(*self._CREAM)
-            self.multi_cell(w - 8, 4, text)
+            self.multi_cell(w - 10, 4, text)
         else:
             self.set_fill_color(*self._WH)
             self.set_draw_color(*self._GRID)
             self.rect(x, y, w, h, "DF")
-            self.set_xy(x + 4, y + 3)
-            self.set_font("Arial", "B", 6)
+            self.set_xy(x + 5, y + 3)
+            self.set_font("Arial", "B", 6.5)
             self.set_text_color(*self._NEUT)
-            self.cell(w - 8, 3, label.upper())
-            self.set_xy(x + 4, y + 9)
+            self.cell(w - 10, 3, label.upper())
+            self.set_xy(x + 5, y + 9)
             self.set_font("Arial", "", 8)
             self.set_text_color(*self._TXT)
-            self.multi_cell(w - 8, 4, text)
+            self.multi_cell(w - 10, 4, text)
 
     def add_footnotes(self):
         self.ln(5)
@@ -1162,8 +1163,10 @@ def build_strategy_pdf(sel_strat, benchmark, window_label, as_of, summary_dict,
                         sf, mf, rt, sp, nq, ny, fig_cum, fig_sf, fig_hm, fig_nq,
                         fig_mf=None, fig_roll=None, fig_ny=None):
     if not HAS_FPDF: return None
-    pdf = MarinerPDF(strategy=sel_strat, benchmark=benchmark, window=window_label, as_of=as_of)
+    pdf = ReportPDF(strategy=sel_strat, benchmark=benchmark, window=window_label, as_of=as_of)
     s = summary_dict
+    M = pdf.M
+    CW = pdf.cw  # content width ~273
 
     # ══════════════════════════════════════════════════════════════════════════
     # PAGE 1: STRATEGY SUMMARY
@@ -1173,30 +1176,31 @@ def build_strategy_pdf(sel_strat, benchmark, window_label, as_of, summary_dict,
     # Title block
     y0 = pdf.get_y()
     pdf.set_fill_color(*pdf._NAVY)
-    pdf.rect(10, y0, 190, 18, "F")
-    pdf.set_xy(14, y0 + 3)
-    pdf.set_font("Arial", "B", 14)
+    pdf.rect(M, y0, CW, 16, "F")
+    pdf.set_xy(M + 5, y0 + 2)
+    pdf.set_font("Arial", "B", 15)
     pdf.set_text_color(*pdf._CREAM)
     pdf.cell(0, 6, "Factor Analysis Summary")
-    pdf.set_xy(14, y0 + 10)
-    pdf.set_font("Arial", "", 9)
+    pdf.set_xy(M + 5, y0 + 9)
+    pdf.set_font("Arial", "", 8.5)
     pdf.set_text_color(180, 200, 210)
     pdf.cell(0, 5, f"{sel_strat}  |  Benchmark: {benchmark}")
-    pdf.set_y(y0 + 22)
+    pdf.set_y(y0 + 19)
 
     # KPI row
     kpis = s.get("kpis", [])
     if kpis:
         n_kpis = len(kpis)
-        kpi_w = (190 - (n_kpis - 1) * 4) / n_kpis
+        gap = 5
+        kpi_w = (CW - (n_kpis - 1) * gap) / n_kpis
         ky = pdf.get_y()
         for i, kpi in enumerate(kpis):
-            kx = 10 + i * (kpi_w + 4)
+            kx = M + i * (kpi_w + gap)
             accent = pdf._TEAL
             if kpi.get("color") == "neg": accent = pdf._NEG
             elif kpi.get("color") == "neut": accent = pdf._NEUT
             pdf._kpi_box(kx, ky, kpi_w, kpi["label"], kpi["value"], kpi["sub"], accent)
-        pdf.set_y(ky + 28)
+        pdf.set_y(ky + 26)
 
     # Narrative
     narr = s.get("narrative", "")
@@ -1204,27 +1208,26 @@ def build_strategy_pdf(sel_strat, benchmark, window_label, as_of, summary_dict,
         ny0 = pdf.get_y()
         pdf.set_fill_color(*pdf._WH)
         pdf.set_draw_color(*pdf._GRID)
-        pdf.rect(10, ny0, 190, 20, "DF")
-        pdf.set_xy(14, ny0 + 3)
-        pdf.set_font("Arial", "B", 6)
+        pdf.rect(M, ny0, CW, 18, "DF")
+        pdf.set_xy(M + 5, ny0 + 3)
+        pdf.set_font("Arial", "B", 6.5)
         pdf.set_text_color(*pdf._NEUT)
         pdf.cell(0, 3, "ANALYSIS OVERVIEW")
-        pdf.set_xy(14, ny0 + 8)
+        pdf.set_xy(M + 5, ny0 + 8)
         pdf.set_font("Arial", "", 8.5)
         pdf.set_text_color(*pdf._TXT)
-        pdf.multi_cell(182, 4, narr)
-        # Adjust height dynamically
-        actual_bottom = pdf.get_y() + 3
-        if actual_bottom > ny0 + 20:
+        pdf.multi_cell(CW - 10, 4, narr)
+        actual_bottom = pdf.get_y() + 2
+        if actual_bottom > ny0 + 18:
             pdf.set_draw_color(*pdf._GRID)
-            pdf.rect(10, ny0, 190, actual_bottom - ny0, "D")
+            pdf.rect(M, ny0, CW, actual_bottom - ny0, "D")
         pdf.set_y(actual_bottom + 2)
 
     # Factor regime rows
     facs = s.get("factors", [])
     for f in facs:
         fy = pdf.get_y()
-        if fy > 245:
+        if fy > 170:
             pdf.add_page()
             fy = pdf.get_y()
         if f["raw"] == "style":
@@ -1238,44 +1241,46 @@ def build_strategy_pdf(sel_strat, benchmark, window_label, as_of, summary_dict,
         pdf._factor_row(fy, f["name"], f["direction"], top_label, top_bps,
                         f.get("hit_top"), bot_label, bot_bps, f.get("hit_bot"),
                         f["significant"])
-        pdf.set_y(fy + 24)
+        pdf.set_y(fy + 22)
 
-    # Outlook cards
+    # Outlook + quarter cards row (side by side in landscape)
     outlook = s.get("outlook", "")
     watch = s.get("outlook_watch", "")
-    if outlook or watch:
+    bq, wq = s.get("best_q"), s.get("worst_q")
+    oy = pdf.get_y() + 1
+    if oy > 155:
+        pdf.add_page()
         oy = pdf.get_y()
-        if oy > 250:
-            pdf.add_page()
-            oy = pdf.get_y()
-        if outlook and watch:
-            pdf._outlook_box(10, oy, 93, 22, "What to Expect", outlook, dark=True)
-            pdf._outlook_box(107, oy, 93, 22, "What to Watch", watch, dark=False)
-        elif outlook:
-            pdf._outlook_box(10, oy, 190, 22, "What to Expect", outlook, dark=True)
+    half = (CW - 5) / 2
+    # Left side: outlook
+    if outlook and watch:
+        pdf._outlook_box(M, oy, half, 22, "What to Expect", outlook, dark=True)
+        pdf._outlook_box(M + half + 5, oy, half, 22, "What to Watch", watch, dark=False)
+    elif outlook:
+        pdf._outlook_box(M, oy, CW, 22, "What to Expect", outlook, dark=True)
+    if outlook or watch:
         pdf.set_y(oy + 25)
 
     # Best/worst quarter cards
-    bq, wq = s.get("best_q"), s.get("worst_q")
     if bq or wq:
         qy = pdf.get_y()
-        if qy > 255:
+        if qy > 172:
             pdf.add_page()
             qy = pdf.get_y()
         if bq:
-            pdf._quarter_box(10, qy, 93, "Best Quarter", bq["period"],
+            pdf._quarter_box(M, qy, half, "Best Quarter", bq["period"],
                              bq["excess_return"], bq["factor_drivers"], True)
         if wq:
-            pdf._quarter_box(107, qy, 93, "Worst Quarter", wq["period"],
+            pdf._quarter_box(M + half + 5, qy, half, "Worst Quarter", wq["period"],
                              wq["excess_return"], wq["factor_drivers"], False)
-        pdf.set_y(qy + 26)
+        pdf.set_y(qy + 25)
 
     # Data context bar
     dy = pdf.get_y()
-    if dy > 270: pdf.add_page(); dy = pdf.get_y()
+    if dy > 185: pdf.add_page(); dy = pdf.get_y()
     pdf.set_fill_color(*pdf._CARD)
-    pdf.rect(10, dy, 190, 8, "F")
-    pdf.set_xy(13, dy + 2)
+    pdf.rect(M, dy, CW, 7, "F")
+    pdf.set_xy(M + 4, dy + 1.5)
     pdf.set_font("Arial", "", 6.5)
     pdf.set_text_color(*pdf._NEUT)
     n_mo = s.get("n_months", "")
@@ -1288,21 +1293,21 @@ def build_strategy_pdf(sel_strat, benchmark, window_label, as_of, summary_dict,
     # ══════════════════════════════════════════════════════════════════════════
     pdf.add_page()
     pdf.section_title("Cumulative Excess Return")
-    pdf.add_chart(fig_cum, w=185, h=60)
+    pdf.add_chart(fig_cum, h=65)
 
     pdf.section_title("Factor Regime Analysis")
-    pdf.add_chart(fig_hm, w=185, h=70)
+    pdf.add_chart(fig_hm, h=70)
 
     # ══════════════════════════════════════════════════════════════════════════
     # PAGE 3: FACTOR ANALYSIS CHARTS
     # ══════════════════════════════════════════════════════════════════════════
     pdf.add_page()
     pdf.section_title("Factor Impact")
-    pdf.add_chart(fig_sf, w=185, h=65)
+    pdf.add_chart(fig_sf, h=70)
 
     if fig_mf:
         pdf.section_title("Multi-Factor Coefficients")
-        pdf.add_chart(fig_mf, w=185, h=55)
+        pdf.add_chart(fig_mf, h=60)
     elif not mf.empty:
         pdf.section_title("Multi-Factor Regression")
         pdf.set_font("Arial", "", 8.5)
@@ -1317,21 +1322,23 @@ def build_strategy_pdf(sel_strat, benchmark, window_label, as_of, summary_dict,
                      new_x="LMARGIN", new_y="NEXT")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # PAGE 4: NOTABLE PERIODS + ROLLING BETAS
+    # PAGE 4: NOTABLE PERIODS
     # ══════════════════════════════════════════════════════════════════════════
     pdf.add_page()
     pdf.section_title("Notable Quarters")
-    pdf.add_chart(fig_nq, w=185, h=60)
+    pdf.add_chart(fig_nq, h=65)
 
     if fig_ny:
         pdf.section_title("Notable Calendar Years")
-        pdf.add_chart(fig_ny, w=185, h=55)
+        pdf.add_chart(fig_ny, h=60)
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # PAGE 5: ROLLING BETAS (if available)
+    # ══════════════════════════════════════════════════════════════════════════
     if fig_roll:
-        if pdf.get_y() > 200:
-            pdf.add_page()
-        pdf.section_title("Rolling Factor Betas")
-        pdf.add_chart(fig_roll, w=185, h=60)
+        pdf.add_page()
+        pdf.section_title("Rolling Factor Betas (36-Month Window)")
+        pdf.add_chart(fig_roll, h=120)
 
     # ══════════════════════════════════════════════════════════════════════════
     # FINAL: METHODOLOGY
@@ -1346,7 +1353,7 @@ def build_strategy_pdf(sel_strat, benchmark, window_label, as_of, summary_dict,
 #  STREAMLIT APP
 # ═══════════════════════════════════════════════════════════════════════════════
 
-st.set_page_config(page_title="Manager Research | Mariner", page_icon="\U0001f531",
+st.set_page_config(page_title="Manager Research Dashboard",
                    layout="wide", initial_sidebar_state="expanded")
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
@@ -1538,7 +1545,7 @@ for k in ["strategy_df", "factor_df", "u_s", "u_f"]:
 
 # ── Header ────────────────────────────────────────────────────────────────────
 st.markdown("""<div class="mhdr">
-    <h1>\U0001f531 Manager Research Dashboard</h1>
+    <h1>Manager Research Dashboard</h1>
     <p>Factor Regime Analysis &amp; Manager Accountability Tool</p>
 </div>""", unsafe_allow_html=True)
 
@@ -1548,8 +1555,8 @@ st.markdown("""<div class="mhdr">
 # ══════════════════════════════════════════════════════════════════════════════
 sb = st.sidebar
 sb.markdown(f"""<div style="text-align:center; padding:6px 0 10px;">
-    <span style="font-size:1.2rem; font-weight:700; color:{C['navy']};">\U0001f531 Mariner</span><br>
-    <span style="font-size:0.72rem; color:{C['neut']};">Manager Research</span>
+    <span style="font-size:1.2rem; font-weight:700; color:{C['navy']};">Manager Research</span><br>
+    <span style="font-size:0.72rem; color:{C['neut']};">Factor Regime Analysis</span>
 </div>""", unsafe_allow_html=True)
 sb.markdown("---")
 
@@ -1871,7 +1878,7 @@ if "\U0001f4c4" in page:
     st.markdown("---")
     st.header("Performance Overview")
     fig_cum = ch_cum(dates, excess, sel_strat)
-    if fig_cum: st.plotly_chart(fig_cum, use_container_width=True)
+    if fig_cum: st.plotly_chart(fig_cum, width='stretch')
 
     # ══════════════════════════════════════════════════════════════════════════
     # NOTABLE QUARTERS & YEARS
@@ -1883,7 +1890,7 @@ if "\U0001f4c4" in page:
     tab_q, tab_y = st.tabs(["\U0001f4c5 Quarters", "\U0001f4ca Calendar Years"])
     with tab_q:
         fig_nq = ch_notable_q(nq)
-        if fig_nq: st.plotly_chart(fig_nq, use_container_width=True)
+        if fig_nq: st.plotly_chart(fig_nq, width='stretch')
         if not nq.empty:
             for _, row in nq.sort_values("start").iterrows():
                 icon = "\U0001f7e2" if row["label"]=="Best" else "\U0001f534"
@@ -1893,7 +1900,7 @@ if "\U0001f4c4" in page:
                             f'Factor drivers: {row["factor_drivers"]}</span></div>', unsafe_allow_html=True)
     with tab_y:
         fig_ny = ch_notable_y(ny)
-        if fig_ny: st.plotly_chart(fig_ny, use_container_width=True)
+        if fig_ny: st.plotly_chart(fig_ny, width='stretch')
         if not ny.empty:
             for _, row in ny.sort_values("period").iterrows():
                 icon = "\U0001f7e2" if row["label"]=="Best" else "\U0001f534"
@@ -1918,7 +1925,7 @@ if "\U0001f4c4" in page:
         hm_metric = st.radio("Metric", ["avg_excess", "hit_rate", "median_excess"])
     with rc2:
         fig_hm = ch_heatmap(rt, hm_metric)
-        if fig_hm: st.plotly_chart(fig_hm, use_container_width=True)
+        if fig_hm: st.plotly_chart(fig_hm, width='stretch')
 
     if not sp.empty:
         st.subheader("Spread Summary (In-Favor minus Out-of-Favor)")
@@ -1929,7 +1936,7 @@ if "\U0001f4c4" in page:
         spd["Sig?"] = spd["significant"].apply(lambda x: "\u2705" if x else "")
         spd["Interpretation"] = spd["interpretation"]
         st.dataframe(spd[["Factor","Spread (bps/mo)","t-stat","Sig?","Interpretation"]],
-                     use_container_width=True, hide_index=True)
+                     width='stretch', hide_index=True)
 
     with st.expander("\U0001f4ca Per-Factor Bar Charts (95% CI)"):
         fnames = rt["factor"].unique() if not rt.empty else []
@@ -1937,7 +1944,7 @@ if "\U0001f4c4" in page:
         for i, fn in enumerate(fnames):
             with cols[i % len(cols)]:
                 fb = ch_bar(rt, fn)
-                if fb: st.plotly_chart(fb, use_container_width=True, key=f"bar_{fn}")
+                if fb: st.plotly_chart(fb, width='stretch', key=f"bar_{fn}")
 
     # ══════════════════════════════════════════════════════════════════════════
     # REGRESSIONS
@@ -1947,7 +1954,7 @@ if "\U0001f4c4" in page:
 
     st.subheader("Single-Factor: Impact per 1-SD Factor Move")
     fig_sf = ch_sf(sf_tbl)
-    if fig_sf: st.plotly_chart(fig_sf, use_container_width=True)
+    if fig_sf: st.plotly_chart(fig_sf, width='stretch')
 
     with st.expander("\U0001f4cb Single-Factor Table"):
         sfd = sf_tbl.copy()
@@ -1957,12 +1964,12 @@ if "\U0001f4c4" in page:
         for c in ["alpha","beta","std_beta","t","p","r2"]:
             sfd[c] = sfd[c].map(lambda x: f"{x:.4f}" if pd.notna(x) else "")
         st.dataframe(sfd[["Factor","beta","std_beta","Impact (bps)","t","p","r2","Sig"]],
-                     use_container_width=True, hide_index=True)
+                     width='stretch', hide_index=True)
 
     if HAS_SM:
         st.subheader("Multi-Factor Regression")
         fig_mf = ch_mf(mf_tbl)
-        if fig_mf: st.plotly_chart(fig_mf, use_container_width=True)
+        if fig_mf: st.plotly_chart(fig_mf, width='stretch')
         if not mf_tbl.empty:
             mc1, mc2, mc3, mc4 = st.columns(4)
             mc1.metric("R\u00b2", f"{mf_tbl.attrs.get('r2',0):.4f}")
@@ -1979,7 +1986,7 @@ if "\U0001f4c4" in page:
     with tab_r:
         r36 = rolling_betas(dates, excess, factors, 36)
         fr36 = ch_rolling(r36, 36)
-        if fr36: st.plotly_chart(fr36, use_container_width=True)
+        if fr36: st.plotly_chart(fr36, width='stretch')
     with tab_s:
         st.markdown("*Do betas hold across regimes, or are they period-specific?*")
         spb = subperiod_betas(excess, factors, dates)
@@ -1987,12 +1994,12 @@ if "\U0001f4c4" in page:
             spb["Factor"] = spb["factor"].apply(fl)
             pivot = spb.pivot_table(index="Factor", columns="period", values="beta", aggfunc="first")
             st.dataframe(pivot.style.format("{:+.3f}", na_rep="\u2014").background_gradient(
-                cmap="RdBu_r", vmin=-1, vmax=1, axis=None), use_container_width=True)
+                cmap="RdBu_r", vmin=-1, vmax=1, axis=None), width='stretch')
             st.caption("Sign consistency across periods = stable exposure. Sign flips = period-specific, less trustworthy.")
 
     with st.expander("\U0001f517 Factor Correlation Matrix"):
         fc_fig = ch_corr(factors)
-        if fc_fig: st.plotly_chart(fc_fig, use_container_width=True)
+        if fc_fig: st.plotly_chart(fc_fig, width='stretch')
 
     # ══════════════════════════════════════════════════════════════════════════
     # EXPORT
@@ -2102,7 +2109,7 @@ elif "\U0001f50d" in page:
         disp["_sort"] = pd.to_numeric(disp[sort_col].str.replace("%", ""), errors="coerce")
         disp = disp.sort_values("_sort", ascending=asc).drop(columns="_sort")
 
-    st.dataframe(disp, use_container_width=True, hide_index=True, height=min(800, 40 + len(disp) * 35))
+    st.dataframe(disp, width='stretch', hide_index=True, height=min(800, 40 + len(disp) * 35))
 
     # ── Summary insights ──────────────────────────────────────────────────────
     if not peer_df.empty and "r2" in peer_df.columns:
@@ -2134,7 +2141,7 @@ elif "\U0001f50d" in page:
     if not corr_matrix.empty:
         fig_pcorr = ch_peer_corr(corr_matrix)
         if fig_pcorr:
-            st.plotly_chart(fig_pcorr, use_container_width=True)
+            st.plotly_chart(fig_pcorr, width='stretch')
 
         # Correlation summary stats
         mask = np.triu(np.ones(corr_matrix.shape, dtype=bool), k=1)
@@ -2445,4 +2452,4 @@ elif "\U0001f50d" in page:
         st.info("Need at least 2 strategies in the peer group to build custom pairs.")
 
 st.markdown("---")
-st.caption("Manager Research Dashboard \u00b7 Mariner \u00b7 Local \u00b7 No cloud \u00b7 No auth")
+st.caption("Manager Research Dashboard")
