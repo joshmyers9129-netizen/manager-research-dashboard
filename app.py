@@ -35,17 +35,18 @@ except ImportError:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 C = {  # Brand color palette
-    "navy_dk": "#0A1628", "navy": "#0F2744", "navy_md": "#1B3A5C",
-    "teal": "#2AA5A0", "teal_lt": "#3DBDB8",
-    "cream": "#F5E6C8", "cream_lt": "#FAF3E6", "wh": "#FFFFFF",
-    "txt": "#1A2332", "txt_lt": "#B8C5D4",
-    "pos": "#2AA5A0", "neg": "#D94F4F", "warn": "#E8A838",
-    "neut": "#7B8FA3", "grid": "#E8EDF2", "card": "#F7F9FB",
+    "navy_dk": "#000000", "navy": "#1A1A1A", "navy_md": "#2293BD",
+    "blue": "#2293BD", "blue_lt": "#4AB0D0",
+    "cream": "#F0E6DD", "cream_lt": "#FBF7F3", "wh": "#FFFFFF",
+    "txt": "#222222", "txt_lt": "#A09080",
+    "pos": "#2293BD", "neg": "#D9532B", "warn": "#FAA51A",
+    "neut": "#7B7265", "grid": "#E8E0D8", "card": "#FBF7F3",
+    "red": "#D9532B", "gold": "#FAA51A",
 }
-BC4 = [C["neg"], C["warn"], C["teal_lt"], C["teal"]]
-BC3 = [C["neg"], C["warn"], C["teal"]]
-FC = [C["teal"], C["navy_md"], C["warn"], C["neg"], C["cream"],
-      C["teal_lt"], C["neut"], "#8B5CF6"]
+BC4 = [C["neg"], C["warn"], C["blue_lt"], C["blue"]]
+BC3 = [C["neg"], C["warn"], C["blue"]]
+FC = [C["blue"], C["red"], C["gold"], C["navy_dk"], C["cream"],
+      C["blue_lt"], C["neut"], "#6B4C8A"]
 
 FDISP = {"style": "Growth vs Value", "yield": "Yield", "momentum": "Momentum",
          "quality": "Quality", "volatility": "Volatility", "liquidity": "Liquidity",
@@ -745,12 +746,12 @@ def make_summary(sf, rt, sp, mf, n_months, nq, ny, window_label):
 
 def _lay(fig, title=""):
     fig.update_layout(
-        title=dict(text=title, font=dict(size=14, color=C["navy"], family="DM Sans, Segoe UI, sans-serif")),
-        font=dict(family="DM Sans, Segoe UI, sans-serif", size=12, color=C["txt"]),
+        title=dict(text=title, font=dict(size=14, color=C["navy"], family="Georgia, Times New Roman, serif")),
+        font=dict(family="Arial, Helvetica Neue, sans-serif", size=12, color=C["txt"]),
         plot_bgcolor=C["wh"], paper_bgcolor=C["wh"],
         margin=dict(l=60,r=30,t=55,b=50),
-        xaxis=dict(gridcolor=C["grid"], zeroline=True, zerolinecolor="#BDC3C7"),
-        yaxis=dict(gridcolor=C["grid"], zeroline=True, zerolinecolor="#BDC3C7"))
+        xaxis=dict(gridcolor=C["grid"], zeroline=True, zerolinecolor="#D5CFC8"),
+        yaxis=dict(gridcolor=C["grid"], zeroline=True, zerolinecolor="#D5CFC8"))
     return fig
 
 def ch_heatmap(rt, metric="avg_excess"):
@@ -761,7 +762,7 @@ def ch_heatmap(rt, metric="avg_excess"):
     fmt=(lambda x: f"{x:.1f}%") if metric=="hit_rate" else (lambda x: f"{x*10000:.0f}")
     text=np.vectorize(fmt)(pivot.values)
     fig=go.Figure(go.Heatmap(z=pivot.values, x=[str(c) for c in pivot.columns], y=list(pivot.index),
-        colorscale=[[0,C["neg"]],[0.5,C["wh"]],[1,C["teal"]]], zmid=0,
+        colorscale=[[0,C["neg"]],[0.5,C["wh"]],[1,C["blue"]]], zmid=0,
         text=text, texttemplate="%{text}", textfont=dict(size=12, color=C["txt"]),
         colorbar=dict(title="Hit %" if metric=="hit_rate" else "Bps/Mo"),
         hovertemplate="Factor: %{y}<br>Bucket: %{x}<br>Value: %{z:.4f}<extra></extra>"))
@@ -790,7 +791,7 @@ def ch_bar(rt, fname):
 def ch_sf(sf):
     if not HAS_PLOTLY or sf.empty: return None
     df=sf.sort_values("impact", ascending=True)
-    colors=[C["teal"] if b>0 else C["neg"] for b in df["impact"]]
+    colors=[C["blue"] if b>0 else C["neg"] for b in df["impact"]]
     fig=go.Figure(go.Bar(y=[fl(f) for f in df["factor"]], x=df["impact"]*10000, orientation="h",
         marker_color=colors,
         text=[f"{v*10000:+.0f}{'*' if p<.05 else ''}" for v,p in zip(df["impact"],df["p"])],
@@ -804,7 +805,7 @@ def ch_sf(sf):
 def ch_mf(mf):
     if not HAS_PLOTLY or mf.empty: return None
     df=mf[mf["var"]!="alpha"].sort_values("coef", ascending=True)
-    colors=[C["teal"] if c>0 else C["neg"] for c in df["coef"]]
+    colors=[C["blue"] if c>0 else C["neg"] for c in df["coef"]]
     fig=go.Figure(go.Bar(y=[fl(f) for f in df["var"]], x=df["coef"], orientation="h",
         marker_color=colors, text=[f"{c:.3f}{'*' if p<.05 else ''}" for c,p in zip(df["coef"],df["p"])],
         textposition="outside"))
@@ -819,7 +820,7 @@ def ch_rolling(rdf, window=36):
         sub=rdf[rdf["factor"]==fc].sort_values("date")
         fig.add_trace(go.Scatter(x=sub["date"],y=sub["beta"],name=fl(fc),mode="lines",
                                   line=dict(color=FC[i%len(FC)], width=2)))
-    fig.add_hline(y=0, line_dash="dash", line_color="#BDC3C7")
+    fig.add_hline(y=0, line_dash="dash", line_color="#D5CFC8")
     _lay(fig, f"Rolling {window}-Month Factor Betas")
     fig.update_layout(height=420, legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="right",x=1))
     return fig
@@ -829,9 +830,9 @@ def ch_cum(dates, excess, name):
     tmp=pd.DataFrame({"d":dates.values,"e":excess.values}).dropna().sort_values("d")
     tmp["c"]=(1+tmp["e"]).cumprod()-1
     fig=go.Figure(go.Scatter(x=tmp["d"],y=tmp["c"],mode="lines",fill="tozeroy",
-        line=dict(color=C["navy_md"],width=2), fillcolor="rgba(27,79,114,0.08)",
+        line=dict(color=C["blue"],width=2), fillcolor="rgba(34,147,189,0.08)",
         hovertemplate="Date: %{x}<br>Cumulative: %{y:.3%}<extra></extra>"))
-    fig.add_hline(y=0, line_dash="dash", line_color="#BDC3C7")
+    fig.add_hline(y=0, line_dash="dash", line_color="#D5CFC8")
     _lay(fig, f"Cumulative Excess Return: {name}")
     fig.update_layout(height=320, yaxis_tickformat=".1%")
     return fig
@@ -840,7 +841,7 @@ def ch_corr(fdf):
     if not HAS_PLOTLY: return None
     fc=[c for c in fdf.columns if c!="date"]; corr=fdf[fc].corr()
     fig=go.Figure(go.Heatmap(z=corr.values, x=[fl(c) for c in corr.columns], y=[fl(c) for c in corr.index],
-        colorscale=[[0,C["neg"]],[0.5,C["wh"]],[1,C["teal"]]], zmid=0, zmin=-1, zmax=1,
+        colorscale=[[0,C["neg"]],[0.5,C["wh"]],[1,C["blue"]]], zmid=0, zmin=-1, zmax=1,
         text=np.round(corr.values,2), texttemplate="%{text}", textfont=dict(size=10)))
     _lay(fig, "Factor Correlation Matrix")
     fig.update_layout(height=max(350, len(fc)*45+120), yaxis=dict(autorange="reversed"))
@@ -852,7 +853,7 @@ def ch_peer_corr(corr_df):
     labels = [_abbrev_strategy(s) for s in corr_df.columns]
     fig = go.Figure(go.Heatmap(
         z=corr_df.values, x=labels, y=labels,
-        colorscale=[[0, C["neg"]], [0.5, C["wh"]], [1, C["teal"]]],
+        colorscale=[[0, C["neg"]], [0.5, C["wh"]], [1, C["blue"]]],
         zmid=0.5, zmin=-0.2, zmax=1,
         text=np.round(corr_df.values, 2), texttemplate="%{text}",
         textfont=dict(size=9),
@@ -870,7 +871,7 @@ def ch_peer_corr(corr_df):
 def ch_notable_q(nq):
     if not HAS_PLOTLY or nq.empty: return None
     df=nq.sort_values("start")
-    colors=[C["teal"] if l=="Best" else C["neg"] for l in df["label"]]
+    colors=[C["blue"] if l=="Best" else C["neg"] for l in df["label"]]
     fig=go.Figure(go.Bar(x=df["period"],y=df["excess_return"],marker_color=colors,
         text=[f"{v:+.1%}" for v in df["excess_return"]], textposition="outside",
         hovertemplate="%{x}<br>Excess: %{y:.2%}<br>%{customdata}<extra></extra>",
@@ -882,7 +883,7 @@ def ch_notable_q(nq):
 def ch_notable_y(ny):
     if not HAS_PLOTLY or ny.empty: return None
     df=ny.sort_values("period")
-    colors=[C["teal"] if l=="Best" else C["neg"] for l in df["label"]]
+    colors=[C["blue"] if l=="Best" else C["neg"] for l in df["label"]]
     fig=go.Figure(go.Bar(x=df["period"],y=df["excess_return"],marker_color=colors,
         text=[f"{v:+.1%}" for v in df["excess_return"]], textposition="outside",
         hovertemplate="%{x}<br>%{y:.2%}<br>%{customdata}<extra></extra>",
@@ -896,12 +897,12 @@ def ch_explained(r2):
     if not HAS_PLOTLY: return None
     vals=[r2*100, (1-r2)*100]
     fig=go.Figure(go.Pie(values=vals, labels=["Factor-Explained","Residual (Unexplained)"],
-        hole=0.55, marker=dict(colors=[C["teal"], C["grid"]]),
+        hole=0.55, marker=dict(colors=[C["blue"], C["grid"]]),
         textinfo="label+percent", textfont=dict(size=12),
         hovertemplate="%{label}: %{value:.1f}%<extra></extra>"))
     fig.update_layout(showlegend=False, height=250, width=300,
                       margin=dict(l=10,r=10,t=30,b=10),
-                      font=dict(family="DM Sans, Segoe UI, sans-serif"),
+                      font=dict(family="Arial, Helvetica Neue, sans-serif"),
                       annotations=[dict(text=f"{r2*100:.0f}%",x=0.5,y=0.5,font_size=24,
                                         font_color=C["navy"],showarrow=False)])
     return fig
@@ -913,17 +914,19 @@ def ch_explained(r2):
 
 class ReportPDF(FPDF if HAS_FPDF else object):
     """Professional landscape PDF report generator."""
-    # Brand colors
-    _NAVY = (15, 39, 68)
-    _NAVY_MD = (27, 79, 114)
-    _TEAL = (42, 165, 160)
-    _CREAM = (245, 230, 200)
-    _TXT = (26, 35, 50)
-    _NEUT = (123, 143, 163)
-    _CARD = (247, 248, 250)
-    _NEG = (217, 79, 79)
+    # Brand colors (from corporate PPT template)
+    _BLACK = (0, 0, 0)
+    _BLUE = (34, 147, 189)    # #2293BD — primary brand blue
+    _RED = (217, 83, 43)      # #D9532B — brand vermillion
+    _GOLD = (250, 165, 26)    # #FAA51A — brand amber
+    _CREAM = (240, 230, 221)  # #F0E6DD — warm cream
+    _CREAM_LT = (251, 247, 243)  # #FBF7F3 — off-white
+    _TXT = (34, 34, 34)       # #222222 — primary text
+    _NEUT = (123, 114, 101)   # #7B7265 — muted text
+    _CARD = (251, 247, 243)   # #FBF7F3 — card bg
+    _NEG = (217, 83, 43)      # same as _RED
     _WH = (255, 255, 255)
-    _GRID = (230, 234, 238)
+    _GRID = (232, 224, 216)   # #E8E0D8 — warm grid
     # Landscape dimensions
     PW = 297  # page width
     PH = 210  # page height
@@ -940,6 +943,9 @@ class ReportPDF(FPDF if HAS_FPDF else object):
         self.add_font("Arial", "B", r"C:\Windows\Fonts\arialbd.ttf")
         self.add_font("Arial", "I", r"C:\Windows\Fonts\ariali.ttf")
         self.add_font("Arial", "BI", r"C:\Windows\Fonts\arialbi.ttf")
+        self.add_font("Georgia", "", r"C:\Windows\Fonts\georgia.ttf")
+        self.add_font("Georgia", "B", r"C:\Windows\Fonts\georgiab.ttf")
+        self.add_font("Georgia", "I", r"C:\Windows\Fonts\georgiai.ttf")
         self.add_font("Courier", "", r"C:\Windows\Fonts\cour.ttf")
         self.add_font("Courier", "B", r"C:\Windows\Fonts\courbd.ttf")
         self.set_auto_page_break(auto=True, margin=18)
@@ -950,15 +956,16 @@ class ReportPDF(FPDF if HAS_FPDF else object):
         return self.PW - 2 * self.M
 
     def header(self):
-        self.set_fill_color(*self._NAVY)
+        self.set_fill_color(*self._BLACK)
         self.rect(0, 0, self.PW, 10, "F")
-        self.set_draw_color(*self._TEAL)
+        self.set_draw_color(*self._BLUE)
         self.line(0, 10, self.PW, 10)
-        self.set_font("Arial", "B", 7)
-        self.set_text_color(*self._CREAM)
+        self.set_font("Georgia", "B", 7)
+        self.set_text_color(*self._WH)
         self.set_xy(self.M, 2)
         self.cell(0, 6, "Manager Research  |  Factor Regime Analysis", align="L")
         self.set_font("Arial", "", 6.5)
+        self.set_text_color(*self._CREAM)
         self.set_xy(self.PW - 100, 2)
         self.cell(88, 6, f"{self.window}  |  {self.as_of}", align="R")
         self.ln(12)
@@ -970,15 +977,15 @@ class ReportPDF(FPDF if HAS_FPDF else object):
         self.ln(2)
         self.set_font("Arial", "", 6)
         self.set_text_color(*self._NEUT)
-        hw = (self.cw) / 2
+        hw = self.cw / 2
         self.cell(hw, 3, f"{self.strategy}  |  {self.benchmark}", align="L")
         self.cell(hw, 3, f"Page {self.page_no()}", align="R")
 
     def section_title(self, title):
-        self.set_font("Arial", "B", 11)
-        self.set_text_color(*self._NAVY)
+        self.set_font("Georgia", "B", 11)
+        self.set_text_color(*self._BLACK)
         self.cell(0, 8, title, new_x="LMARGIN", new_y="NEXT")
-        self.set_draw_color(*self._TEAL)
+        self.set_draw_color(*self._BLUE)
         self.line(self.M, self.get_y(), self.M + 55, self.get_y())
         self.ln(3)
 
@@ -1011,7 +1018,7 @@ class ReportPDF(FPDF if HAS_FPDF else object):
 
     # ── Summary page helpers ─────────────────────────────────────────────────
     def _kpi_box(self, x, y, w, label, value, sub, accent=None):
-        accent = accent or self._TEAL
+        accent = accent or self._BLUE
         self.set_fill_color(*self._WH)
         self.set_draw_color(*self._GRID)
         self.rect(x, y, w, 22, "DF")
@@ -1022,8 +1029,8 @@ class ReportPDF(FPDF if HAS_FPDF else object):
         self.set_text_color(*self._NEUT)
         self.cell(w - 8, 3, label.upper())
         self.set_xy(x + 4, y + 9.5)
-        self.set_font("Arial", "B", 15)
-        self.set_text_color(*self._NAVY)
+        self.set_font("Georgia", "B", 15)
+        self.set_text_color(*self._BLACK)
         self.cell(w - 8, 6, value)
         self.set_xy(x + 4, y + 17)
         self.set_font("Arial", "", 6.5)
@@ -1038,12 +1045,12 @@ class ReportPDF(FPDF if HAS_FPDF else object):
         self.rect(self.M, y, row_w, 20, "DF")
         # Left: factor name + direction
         self.set_xy(self.M + 4, y + 2)
-        self.set_font("Arial", "B", 9)
-        self.set_text_color(*self._NAVY)
+        self.set_font("Georgia", "B", 9)
+        self.set_text_color(*self._BLACK)
         self.cell(70, 5, name)
         self.set_font("Arial", "", 6)
         if significant:
-            self.set_text_color(*self._TEAL)
+            self.set_text_color(*self._BLUE)
             self.cell(30, 5, "SIGNIFICANT")
         else:
             self.set_text_color(*self._NEUT)
@@ -1054,14 +1061,14 @@ class ReportPDF(FPDF if HAS_FPDF else object):
         self.cell(120, 4, direction)
         # Top quartile box
         bx1 = self.M + row_w - 120
-        self.set_fill_color(230, 248, 247)
+        self.set_fill_color(220, 240, 248)  # light blue tint
         self.rect(bx1, y + 2, 55, 16, "F")
         self.set_xy(bx1 + 3, y + 3)
         self.set_font("Arial", "B", 5.5)
-        self.set_text_color(*self._TEAL)
+        self.set_text_color(*self._BLUE)
         self.cell(49, 3, top_label.upper()[:40])
         self.set_xy(bx1 + 3, y + 7)
-        self.set_font("Arial", "B", 12)
+        self.set_font("Georgia", "B", 12)
         self.cell(49, 5, f"{top_bps:+.0f} bps/mo")
         self.set_xy(bx1 + 3, y + 13)
         self.set_font("Arial", "", 5.5)
@@ -1069,14 +1076,14 @@ class ReportPDF(FPDF if HAS_FPDF else object):
         self.cell(49, 3, f"{top_hit:.0f}% months positive" if top_hit is not None else "")
         # Bottom quartile box
         bx2 = bx1 + 60
-        self.set_fill_color(253, 237, 237)
+        self.set_fill_color(252, 234, 228)  # light vermillion tint
         self.rect(bx2, y + 2, 55, 16, "F")
         self.set_xy(bx2 + 3, y + 3)
         self.set_font("Arial", "B", 5.5)
-        self.set_text_color(*self._NEG)
+        self.set_text_color(*self._RED)
         self.cell(49, 3, bot_label.upper()[:40])
         self.set_xy(bx2 + 3, y + 7)
-        self.set_font("Arial", "B", 12)
+        self.set_font("Georgia", "B", 12)
         self.cell(49, 5, f"{bot_bps:+.0f} bps/mo")
         self.set_xy(bx2 + 3, y + 13)
         self.set_font("Arial", "", 5.5)
@@ -1084,7 +1091,7 @@ class ReportPDF(FPDF if HAS_FPDF else object):
         self.cell(49, 3, f"{bot_hit:.0f}% months positive" if bot_hit is not None else "")
 
     def _quarter_box(self, x, y, w, label, period, ret, drivers, is_best=True):
-        accent = self._TEAL if is_best else self._NEG
+        accent = self._BLUE if is_best else self._RED
         self.set_fill_color(*self._WH)
         self.set_draw_color(*self._GRID)
         self.rect(x, y, w, 22, "DF")
@@ -1095,11 +1102,11 @@ class ReportPDF(FPDF if HAS_FPDF else object):
         self.set_text_color(*accent)
         self.cell(w - 8, 3, label.upper())
         self.set_xy(x + 4, y + 9.5)
-        self.set_font("Arial", "B", 13)
+        self.set_font("Georgia", "B", 13)
         self.set_text_color(*accent)
         self.cell(35, 5, f"{ret:+.1%}")
-        self.set_font("Arial", "B", 9)
-        self.set_text_color(*self._NAVY)
+        self.set_font("Georgia", "B", 9)
+        self.set_text_color(*self._BLACK)
         self.cell(w - 43, 5, period, align="R")
         self.set_xy(x + 4, y + 16)
         self.set_font("Arial", "", 6.5)
@@ -1111,11 +1118,11 @@ class ReportPDF(FPDF if HAS_FPDF else object):
         max_chars = int((w - 10) / 2.0 * (h - 9) / 4)  # rough estimate
         display_text = text[:max_chars] + "..." if len(text) > max_chars else text
         if dark:
-            self.set_fill_color(*self._NAVY)
+            self.set_fill_color(*self._BLACK)
             self.rect(x, y, w, h, "F")
             self.set_xy(x + 5, y + 3)
             self.set_font("Arial", "B", 6.5)
-            self.set_text_color(*self._TEAL)
+            self.set_text_color(*self._BLUE)
             self.cell(w - 10, 3, label.upper())
             self.set_xy(x + 5, y + 9)
             self.set_font("Arial", "", 8)
@@ -1183,15 +1190,15 @@ def build_strategy_pdf(sel_strat, benchmark, window_label, as_of, summary_dict,
 
     # Title block
     y0 = pdf.get_y()
-    pdf.set_fill_color(*pdf._NAVY)
+    pdf.set_fill_color(*pdf._BLACK)
     pdf.rect(M, y0, CW, 16, "F")
     pdf.set_xy(M + 5, y0 + 2)
-    pdf.set_font("Arial", "B", 15)
-    pdf.set_text_color(*pdf._CREAM)
+    pdf.set_font("Georgia", "B", 15)
+    pdf.set_text_color(*pdf._WH)
     pdf.cell(0, 6, "Factor Analysis Summary")
     pdf.set_xy(M + 5, y0 + 9)
     pdf.set_font("Arial", "", 8.5)
-    pdf.set_text_color(180, 200, 210)
+    pdf.set_text_color(*pdf._CREAM)
     pdf.cell(0, 5, f"{sel_strat}  |  Benchmark: {benchmark}")
     pdf.set_y(y0 + 19)
 
@@ -1204,8 +1211,8 @@ def build_strategy_pdf(sel_strat, benchmark, window_label, as_of, summary_dict,
         ky = pdf.get_y()
         for i, kpi in enumerate(kpis):
             kx = M + i * (kpi_w + gap)
-            accent = pdf._TEAL
-            if kpi.get("color") == "neg": accent = pdf._NEG
+            accent = pdf._BLUE
+            if kpi.get("color") == "neg": accent = pdf._RED
             elif kpi.get("color") == "neut": accent = pdf._NEUT
             pdf._kpi_box(kx, ky, kpi_w, kpi["label"], kpi["value"], kpi["sub"], accent)
         pdf.set_y(ky + 26)
@@ -1374,76 +1381,77 @@ st.set_page_config(page_title="Manager Research Dashboard",
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
 st.markdown(f"""<style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
-.block-container {{ padding-top: 1rem; font-family: 'DM Sans', sans-serif; }}
-h1 {{ color: {C["navy"]}; font-family: 'DM Sans'; font-weight: 700; }}
-h2 {{ color: {C["navy_md"]}; font-family: 'DM Sans'; font-weight: 600;
-      border-bottom: 2px solid {C["teal"]}; padding-bottom: 6px; }}
-h3 {{ color: {C["txt"]}; font-family: 'DM Sans'; font-weight: 600; }}
+.block-container {{ padding-top: 1rem; font-family: Arial, 'Helvetica Neue', sans-serif; }}
+h1 {{ color: {C["navy"]}; font-family: Georgia, 'Times New Roman', serif; font-weight: 700; }}
+h2 {{ color: {C["blue"]}; font-family: Georgia, 'Times New Roman', serif; font-weight: 600;
+      border-bottom: 2px solid {C["blue"]}; padding-bottom: 6px; }}
+h3 {{ color: {C["txt"]}; font-family: Georgia, 'Times New Roman', serif; font-weight: 600; }}
 .stMetric > div {{ background: {C["card"]}; border-radius: 8px; padding: 8px 14px;
-                   border-left: 3px solid {C["teal"]}; }}
+                   border-left: 3px solid {C["blue"]}; }}
 div[data-testid="stExpander"] {{ border: 1px solid {C["grid"]}; border-radius: 8px; }}
-.mhdr {{ background: linear-gradient(135deg, {C["navy_dk"]}, {C["navy_md"]});
-         padding: 18px 24px; border-radius: 10px; margin-bottom: 8px; }}
-.mhdr h1 {{ color: {C["cream"]} !important; margin: 0; font-size: 1.5rem; }}
-.mhdr p {{ color: {C["txt_lt"]}; margin: 4px 0 0 0; font-size: 0.85rem; }}
+.mhdr {{ background: {C["navy_dk"]}; padding: 22px 28px; border-radius: 0; margin-bottom: 8px; }}
+.mhdr h1 {{ color: {C["wh"]} !important; margin: 0; font-size: 1.5rem;
+            font-family: Georgia, 'Times New Roman', serif !important; }}
+.mhdr p {{ color: {C["cream"]}; margin: 4px 0 0 0; font-size: 0.85rem; }}
 .rleg {{ background: {C["card"]}; padding: 10px 16px; border-radius: 6px;
          font-size: 0.82rem; color: {C["neut"]}; margin-bottom: 10px; }}
 .ctx {{ background: {C["card"]}; padding: 10px 14px; border-radius: 6px;
         font-size: 0.82rem; margin-bottom: 8px; color: {C["neut"]}; }}
 .ncard {{ padding: 8px 0; border-bottom: 1px solid {C["grid"]}; }}
 .ncard:last-child {{ border-bottom: none; }}
-.wsel {{ background: {C["navy"]}; color: {C["cream"]}; padding: 8px 16px; border-radius: 8px;
+.wsel {{ background: {C["blue"]}; color: {C["wh"]}; padding: 8px 16px; border-radius: 4px;
          font-size: 0.85rem; margin-bottom: 12px; display: inline-block; }}
 
 /* ── Summary section ────────────────────────────────────────────────── */
 .sum-section {{ margin-bottom: 28px; }}
 .sum-kpi-row {{ display: flex; gap: 16px; margin-bottom: 24px; }}
 .sum-kpi {{ flex: 1; background: {C["wh"]}; border: 1px solid {C["grid"]};
-            border-radius: 10px; padding: 20px 22px; position: relative;
+            border-radius: 8px; padding: 20px 22px; position: relative;
             overflow: hidden; transition: box-shadow 0.2s; }}
-.sum-kpi:hover {{ box-shadow: 0 4px 16px rgba(10,22,40,0.08); }}
+.sum-kpi:hover {{ box-shadow: 0 4px 16px rgba(0,0,0,0.06); }}
 .sum-kpi::before {{ content: ''; position: absolute; top: 0; left: 0; right: 0;
-                    height: 3px; border-radius: 10px 10px 0 0; }}
-.sum-kpi.kpi-teal::before {{ background: {C["teal"]}; }}
-.sum-kpi.kpi-pos::before {{ background: {C["teal"]}; }}
+                    height: 3px; border-radius: 8px 8px 0 0; }}
+.sum-kpi.kpi-teal::before {{ background: {C["blue"]}; }}
+.sum-kpi.kpi-pos::before {{ background: {C["blue"]}; }}
 .sum-kpi.kpi-neg::before {{ background: {C["neg"]}; }}
 .sum-kpi.kpi-neut::before {{ background: {C["neut"]}; }}
 .sum-kpi .kpi-label {{ font-size: 0.72rem; font-weight: 600; text-transform: uppercase;
                        letter-spacing: 0.08em; color: {C["neut"]}; margin-bottom: 6px; }}
 .sum-kpi .kpi-value {{ font-size: 1.65rem; font-weight: 700; color: {C["navy"]};
-                       line-height: 1.2; margin-bottom: 4px; }}
+                       font-family: Georgia, serif; line-height: 1.2; margin-bottom: 4px; }}
 .sum-kpi .kpi-sub {{ font-size: 0.78rem; color: {C["neut"]}; line-height: 1.35; }}
 
 .sum-narrative {{ background: {C["wh"]}; border: 1px solid {C["grid"]};
-                  border-radius: 10px; padding: 24px 28px; margin-bottom: 24px; }}
+                  border-radius: 8px; padding: 24px 28px; margin-bottom: 24px; }}
 .sum-narrative .nar-title {{ font-size: 0.72rem; font-weight: 600; text-transform: uppercase;
                              letter-spacing: 0.08em; color: {C["neut"]}; margin-bottom: 10px; }}
 .sum-narrative .nar-body {{ font-size: 0.95rem; color: {C["txt"]}; line-height: 1.7; }}
 
 .sum-factors {{ display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 24px; }}
 .sum-factor {{ flex: 1; min-width: 280px; background: {C["wh"]}; border: 1px solid {C["grid"]};
-               border-radius: 10px; padding: 20px 22px; transition: box-shadow 0.2s; }}
-.sum-factor:hover {{ box-shadow: 0 4px 16px rgba(10,22,40,0.08); }}
+               border-radius: 8px; padding: 20px 22px; transition: box-shadow 0.2s; }}
+.sum-factor:hover {{ box-shadow: 0 4px 16px rgba(0,0,0,0.06); }}
 .sum-factor .fac-header {{ display: flex; align-items: center; justify-content: space-between;
                            margin-bottom: 12px; }}
-.sum-factor .fac-name {{ font-size: 0.95rem; font-weight: 600; color: {C["navy"]}; }}
+.sum-factor .fac-name {{ font-size: 0.95rem; font-weight: 600; color: {C["navy"]};
+                         font-family: Georgia, serif; }}
 .sum-factor .fac-badge {{ font-size: 0.68rem; font-weight: 600; padding: 3px 10px;
                           border-radius: 20px; text-transform: uppercase; letter-spacing: 0.04em; }}
-.fac-badge.sig {{ background: rgba(42,165,160,0.12); color: {C["teal"]}; }}
+.fac-badge.sig {{ background: rgba(34,147,189,0.10); color: {C["blue"]}; }}
 .fac-badge.nsig {{ background: {C["card"]}; color: {C["neut"]}; }}
 .sum-factor .fac-direction {{ font-size: 0.85rem; color: {C["txt"]}; line-height: 1.4;
                               font-weight: 500; margin-bottom: 12px; }}
 .sum-factor .fac-regimes {{ display: flex; gap: 10px; margin-bottom: 8px; }}
 .sum-factor .fac-regime {{ flex: 1; border-radius: 6px; padding: 10px 12px; text-align: center; }}
-.fac-regime.regime-top {{ background: rgba(42,165,160,0.07); }}
-.fac-regime.regime-bot {{ background: rgba(217,79,79,0.06); }}
+.fac-regime.regime-top {{ background: rgba(34,147,189,0.07); }}
+.fac-regime.regime-bot {{ background: rgba(217,83,43,0.06); }}
 .fac-regime .regime-label {{ font-size: 0.65rem; font-weight: 600; text-transform: uppercase;
                              letter-spacing: 0.06em; margin-bottom: 4px; }}
-.regime-top .regime-label {{ color: {C["teal"]}; }}
+.regime-top .regime-label {{ color: {C["blue"]}; }}
 .regime-bot .regime-label {{ color: {C["neg"]}; }}
-.fac-regime .regime-val {{ font-size: 1.2rem; font-weight: 700; line-height: 1.2; }}
-.regime-top .regime-val {{ color: {C["teal"]}; }}
+.fac-regime .regime-val {{ font-size: 1.2rem; font-weight: 700; line-height: 1.2;
+                           font-family: Georgia, serif; }}
+.regime-top .regime-val {{ color: {C["blue"]}; }}
 .regime-bot .regime-val {{ color: {C["neg"]}; }}
 .fac-regime .regime-sub {{ font-size: 0.7rem; color: {C["neut"]}; margin-top: 2px; }}
 .sum-factor .fac-meta {{ font-size: 0.72rem; color: {C["neut"]}; display: flex;
@@ -1451,48 +1459,49 @@ div[data-testid="stExpander"] {{ border: 1px solid {C["grid"]}; border-radius: 8
                          border-top: 1px solid {C["grid"]}; }}
 
 .sum-outlook {{ display: flex; gap: 16px; margin-bottom: 24px; }}
-.sum-outlook-card {{ flex: 1; border-radius: 10px; padding: 20px 22px; }}
-.outlook-expect {{ background: linear-gradient(135deg, {C["navy_dk"]}, {C["navy"]});
-                   color: {C["cream"]}; }}
+.sum-outlook-card {{ flex: 1; border-radius: 8px; padding: 20px 22px; }}
+.outlook-expect {{ background: {C["navy_dk"]}; color: {C["wh"]}; }}
 .outlook-watch {{ background: {C["wh"]}; border: 1px solid {C["grid"]}; }}
 .sum-outlook-card .out-label {{ font-size: 0.72rem; font-weight: 600; text-transform: uppercase;
                                 letter-spacing: 0.08em; margin-bottom: 8px; }}
-.outlook-expect .out-label {{ color: {C["teal_lt"]}; }}
+.outlook-expect .out-label {{ color: {C["blue"]}; }}
 .outlook-watch .out-label {{ color: {C["neut"]}; }}
 .sum-outlook-card .out-body {{ font-size: 0.9rem; line-height: 1.6; }}
-.outlook-expect .out-body {{ color: {C["cream_lt"]}; }}
+.outlook-expect .out-body {{ color: {C["cream"]}; }}
 .outlook-watch .out-body {{ color: {C["txt"]}; }}
 
 .sum-quarters {{ display: flex; gap: 16px; }}
-.sum-qcard {{ flex: 1; border-radius: 10px; padding: 18px 20px; border: 1px solid {C["grid"]};
+.sum-qcard {{ flex: 1; border-radius: 8px; padding: 18px 20px; border: 1px solid {C["grid"]};
               background: {C["wh"]}; }}
 .sum-qcard .qc-label {{ font-size: 0.68rem; font-weight: 600; text-transform: uppercase;
                          letter-spacing: 0.06em; margin-bottom: 6px; }}
-.qc-best .qc-label {{ color: {C["teal"]}; }}
+.qc-best .qc-label {{ color: {C["blue"]}; }}
 .qc-worst .qc-label {{ color: {C["neg"]}; }}
-.sum-qcard .qc-period {{ font-size: 0.85rem; font-weight: 600; color: {C["navy"]}; }}
-.sum-qcard .qc-return {{ font-size: 1.3rem; font-weight: 700; margin: 4px 0; }}
-.qc-best .qc-return {{ color: {C["teal"]}; }}
+.sum-qcard .qc-period {{ font-size: 0.85rem; font-weight: 600; color: {C["navy"]};
+                          font-family: Georgia, serif; }}
+.sum-qcard .qc-return {{ font-size: 1.3rem; font-weight: 700; margin: 4px 0;
+                          font-family: Georgia, serif; }}
+.qc-best .qc-return {{ color: {C["blue"]}; }}
 .qc-worst .qc-return {{ color: {C["neg"]}; }}
 .sum-qcard .qc-drivers {{ font-size: 0.78rem; color: {C["neut"]}; line-height: 1.4; }}
 
-.sum-databar {{ background: {C["card"]}; border-radius: 8px; padding: 10px 16px;
+.sum-databar {{ background: {C["card"]}; border-radius: 6px; padding: 10px 16px;
                 font-size: 0.78rem; color: {C["neut"]}; margin-top: 16px;
                 display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }}
 .sum-databar span {{ display: inline-flex; align-items: center; gap: 4px; }}
 .sum-databar .db-dot {{ width: 6px; height: 6px; border-radius: 50%;
-                        background: {C["teal"]}; display: inline-block; }}
+                        background: {C["blue"]}; display: inline-block; }}
 
 /* ── Pairing recommendations ────────────────────────────────────────── */
 .pair-section {{ margin-top: 32px; }}
 .pair-section-title {{ font-size: 0.72rem; font-weight: 600; text-transform: uppercase;
                        letter-spacing: 0.08em; color: {C["neut"]}; margin-bottom: 16px; }}
-.pair-card {{ background: {C["wh"]}; border: 1px solid {C["grid"]}; border-radius: 10px;
+.pair-card {{ background: {C["wh"]}; border: 1px solid {C["grid"]}; border-radius: 8px;
               padding: 22px 24px; margin-bottom: 14px; transition: box-shadow 0.2s;
               position: relative; overflow: hidden; }}
-.pair-card:hover {{ box-shadow: 0 4px 16px rgba(10,22,40,0.08); }}
+.pair-card:hover {{ box-shadow: 0 4px 16px rgba(0,0,0,0.06); }}
 .pair-card::before {{ content: ''; position: absolute; top: 0; left: 0; right: 0;
-                      height: 3px; background: linear-gradient(90deg, {C["teal"]}, {C["navy_md"]}); }}
+                      height: 3px; background: linear-gradient(90deg, {C["blue"]}, {C["gold"]}); }}
 .pair-header {{ display: flex; justify-content: space-between; align-items: flex-start;
                 margin-bottom: 14px; }}
 .pair-names {{ flex: 1; }}
@@ -1503,8 +1512,8 @@ div[data-testid="stExpander"] {{ border: 1px solid {C["grid"]}; border-radius: 8
 .pair-corr {{ text-align: right; min-width: 120px; }}
 .pair-corr .corr-label {{ font-size: 0.68rem; font-weight: 600; text-transform: uppercase;
                           letter-spacing: 0.06em; color: {C["neut"]}; margin-bottom: 2px; }}
-.pair-corr .corr-value {{ font-size: 1.5rem; font-weight: 700; }}
-.corr-neg {{ color: {C["teal"]}; }}
+.pair-corr .corr-value {{ font-size: 1.5rem; font-weight: 700; font-family: Georgia, serif; }}
+.corr-neg {{ color: {C["blue"]}; }}
 .corr-low {{ color: {C["warn"]}; }}
 .corr-med {{ color: {C["neut"]}; }}
 .pair-rationale {{ display: flex; gap: 12px; flex-wrap: wrap; }}
@@ -1514,11 +1523,11 @@ div[data-testid="stExpander"] {{ border: 1px solid {C["grid"]}; border-radius: 8
                           letter-spacing: 0.04em; color: {C["neut"]}; margin-bottom: 3px; }}
 .pair-chip .chip-factor {{ display: flex; justify-content: space-between; align-items: center;
                            padding: 2px 0; }}
-.chip-pos {{ color: {C["teal"]}; font-weight: 600; }}
+.chip-pos {{ color: {C["blue"]}; font-weight: 600; }}
 .chip-neg {{ color: {C["neg"]}; font-weight: 600; }}
 .pair-rank {{ display: inline-flex; align-items: center; justify-content: center;
-              width: 26px; height: 26px; border-radius: 50%; background: {C["navy"]};
-              color: {C["cream"]}; font-size: 0.75rem; font-weight: 700; margin-right: 10px;
+              width: 26px; height: 26px; border-radius: 50%; background: {C["blue"]};
+              color: {C["wh"]}; font-size: 0.75rem; font-weight: 700; margin-right: 10px;
               flex-shrink: 0; }}
 
 /* ── Factor tilt rows ───────────────────────────────────────────────── */
@@ -1527,14 +1536,14 @@ div[data-testid="stExpander"] {{ border: 1px solid {C["grid"]}; border-radius: 8
              border-bottom: 1px solid {C["grid"]}; }}
 .tilt-row:last-child {{ border-bottom: none; }}
 .tilt-factor-name {{ font-size: 0.82rem; font-weight: 600; color: {C["navy"]};
-                     min-width: 130px; }}
+                     min-width: 130px; font-family: Georgia, serif; }}
 .tilt-strats {{ display: flex; gap: 16px; flex: 1; }}
 .tilt-strat {{ display: flex; flex-direction: column; flex: 1;
                background: {C["card"]}; border-radius: 6px; padding: 6px 12px; }}
 .tilt-strat-name {{ font-size: 0.68rem; color: {C["neut"]}; margin-bottom: 2px; }}
 .tilt-strat-label {{ font-size: 0.82rem; font-weight: 600; }}
 .tilt-strat-beta {{ font-size: 0.72rem; color: {C["neut"]}; margin-top: 1px; }}
-.tilt-pos {{ color: {C["teal"]}; }}
+.tilt-pos {{ color: {C["blue"]}; }}
 .tilt-neg {{ color: {C["neg"]}; }}
 
 /* ── Blended performance stats ──────────────────────────────────────── */
@@ -1550,9 +1559,9 @@ div[data-testid="stExpander"] {{ border: 1px solid {C["grid"]}; border-radius: 8
                  font-weight: 500; color: {C["txt"]}; }}
 .blend-val {{ padding: 6px 10px; border-bottom: 1px solid {C["grid"]};
               text-align: right; }}
-.blend-val.blend-highlight {{ background: rgba(42,165,160,0.06); font-weight: 600;
+.blend-val.blend-highlight {{ background: rgba(34,147,189,0.06); font-weight: 600;
                               color: {C["navy"]}; }}
-.blend-best {{ color: {C["teal"]}; font-weight: 600; }}
+.blend-best {{ color: {C["blue"]}; font-weight: 600; }}
 .blend-worst {{ color: {C["neg"]}; font-weight: 600; }}
 </style>""", unsafe_allow_html=True)
 
@@ -1562,7 +1571,7 @@ for k in ["strategy_df", "factor_df", "u_s", "u_f"]:
 # ── Header ────────────────────────────────────────────────────────────────────
 st.markdown("""<div class="mhdr">
     <h1>Manager Research Dashboard</h1>
-    <p>Factor Regime Analysis &amp; Manager Accountability Tool</p>
+    <p>Factor Regime Analysis &amp; Manager Evaluation</p>
 </div>""", unsafe_allow_html=True)
 
 
@@ -1571,7 +1580,7 @@ st.markdown("""<div class="mhdr">
 # ══════════════════════════════════════════════════════════════════════════════
 sb = st.sidebar
 sb.markdown(f"""<div style="text-align:center; padding:6px 0 10px;">
-    <span style="font-size:1.2rem; font-weight:700; color:{C['navy']};">Manager Research</span><br>
+    <span style="font-size:1.2rem; font-weight:700; color:{C['navy']}; font-family:Georgia,serif;">Manager Research</span><br>
     <span style="font-size:0.72rem; color:{C['neut']};">Factor Regime Analysis</span>
 </div>""", unsafe_allow_html=True)
 sb.markdown("---")
