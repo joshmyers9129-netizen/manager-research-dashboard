@@ -940,6 +940,8 @@ class ReportPDF(FPDF if HAS_FPDF else object):
         self.add_font("Arial", "B", r"C:\Windows\Fonts\arialbd.ttf")
         self.add_font("Arial", "I", r"C:\Windows\Fonts\ariali.ttf")
         self.add_font("Arial", "BI", r"C:\Windows\Fonts\arialbi.ttf")
+        self.add_font("Courier", "", r"C:\Windows\Fonts\cour.ttf")
+        self.add_font("Courier", "B", r"C:\Windows\Fonts\courbd.ttf")
         self.set_auto_page_break(auto=True, margin=18)
 
     @property
@@ -989,19 +991,22 @@ class ReportPDF(FPDF if HAS_FPDF else object):
         self.ln(1)
 
     def add_chart(self, fig, w=None, h=None):
-        w = w or (self.cw)
-        h = h or 85
+        w = w or self.cw
+        h = h or 70
         if fig is None: return
+        # Check if chart would overflow the page; if so, start new page
+        if self.get_y() + h > 178:
+            self.add_page()
         try:
-            imgb = fig.to_image(format="png", width=int(w*5), height=int(h*5), scale=2)
+            imgb = fig.to_image(format="png", width=int(w * 4), height=int(h * 4), scale=2)
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
                 f.write(imgb); tp = f.name
-            self.image(tp, w=w)
+            self.image(tp, x=self.M, w=w)
             self.ln(3)
             os.unlink(tp)
-        except Exception:
+        except Exception as exc:
             self.set_font("Arial", "I", 8)
-            self.cell(0, 5, "(Chart rendering requires kaleido: pip install kaleido)",
+            self.cell(0, 5, f"(Chart could not be rendered: {exc})",
                      new_x="LMARGIN", new_y="NEXT")
 
     # ── Summary page helpers ─────────────────────────────────────────────────
@@ -1102,6 +1107,9 @@ class ReportPDF(FPDF if HAS_FPDF else object):
         self.cell(w - 8, 3, drivers[:100])
 
     def _outlook_box(self, x, y, w, h, label, text, dark=False):
+        # Truncate text to avoid overflowing the box
+        max_chars = int((w - 10) / 2.0 * (h - 9) / 4)  # rough estimate
+        display_text = text[:max_chars] + "..." if len(text) > max_chars else text
         if dark:
             self.set_fill_color(*self._NAVY)
             self.rect(x, y, w, h, "F")
@@ -1112,7 +1120,7 @@ class ReportPDF(FPDF if HAS_FPDF else object):
             self.set_xy(x + 5, y + 9)
             self.set_font("Arial", "", 8)
             self.set_text_color(*self._CREAM)
-            self.multi_cell(w - 10, 4, text)
+            self.multi_cell(w - 10, 4, display_text)
         else:
             self.set_fill_color(*self._WH)
             self.set_draw_color(*self._GRID)
@@ -1124,7 +1132,7 @@ class ReportPDF(FPDF if HAS_FPDF else object):
             self.set_xy(x + 5, y + 9)
             self.set_font("Arial", "", 8)
             self.set_text_color(*self._TXT)
-            self.multi_cell(w - 10, 4, text)
+            self.multi_cell(w - 10, 4, display_text)
 
     def add_footnotes(self):
         self.ln(5)
@@ -1227,7 +1235,7 @@ def build_strategy_pdf(sel_strat, benchmark, window_label, as_of, summary_dict,
     facs = s.get("factors", [])
     for f in facs:
         fy = pdf.get_y()
-        if fy > 170:
+        if fy + 22 > 178:  # factor row is 20mm + 2mm gap; usable ≈ 178mm
             pdf.add_page()
             fy = pdf.get_y()
         if f["raw"] == "style":
@@ -1248,7 +1256,7 @@ def build_strategy_pdf(sel_strat, benchmark, window_label, as_of, summary_dict,
     watch = s.get("outlook_watch", "")
     bq, wq = s.get("best_q"), s.get("worst_q")
     oy = pdf.get_y() + 1
-    if oy > 155:
+    if oy + 25 > 178:  # outlook boxes are 22mm + 3mm gap
         pdf.add_page()
         oy = pdf.get_y()
     half = (CW - 5) / 2
@@ -1264,7 +1272,7 @@ def build_strategy_pdf(sel_strat, benchmark, window_label, as_of, summary_dict,
     # Best/worst quarter cards
     if bq or wq:
         qy = pdf.get_y()
-        if qy > 172:
+        if qy + 25 > 178:  # quarter cards are 22mm + 3mm gap
             pdf.add_page()
             qy = pdf.get_y()
         if bq:
@@ -1277,7 +1285,7 @@ def build_strategy_pdf(sel_strat, benchmark, window_label, as_of, summary_dict,
 
     # Data context bar
     dy = pdf.get_y()
-    if dy > 185: pdf.add_page(); dy = pdf.get_y()
+    if dy + 10 > 178: pdf.add_page(); dy = pdf.get_y()
     pdf.set_fill_color(*pdf._CARD)
     pdf.rect(M, dy, CW, 7, "F")
     pdf.set_xy(M + 4, dy + 1.5)
@@ -1289,17 +1297,21 @@ def build_strategy_pdf(sel_strat, benchmark, window_label, as_of, summary_dict,
     pdf.cell(0, 4, f"{n_mo} months  |  {n_sig} significant factors  |  Window: {win}")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # PAGE 2: CUMULATIVE + REGIME HEATMAP
+    # PAGE 2: CUMULATIVE EXCESS RETURN
     # ══════════════════════════════════════════════════════════════════════════
     pdf.add_page()
     pdf.section_title("Cumulative Excess Return")
-    pdf.add_chart(fig_cum, h=65)
-
-    pdf.section_title("Factor Regime Analysis")
-    pdf.add_chart(fig_hm, h=70)
+    pdf.add_chart(fig_cum, h=70)
 
     # ══════════════════════════════════════════════════════════════════════════
-    # PAGE 3: FACTOR ANALYSIS CHARTS
+    # PAGE 3: REGIME HEATMAP
+    # ══════════════════════════════════════════════════════════════════════════
+    pdf.add_page()
+    pdf.section_title("Factor Regime Analysis")
+    pdf.add_chart(fig_hm, h=75)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PAGE 4: FACTOR ANALYSIS CHARTS
     # ══════════════════════════════════════════════════════════════════════════
     pdf.add_page()
     pdf.section_title("Factor Impact")
@@ -1307,7 +1319,7 @@ def build_strategy_pdf(sel_strat, benchmark, window_label, as_of, summary_dict,
 
     if fig_mf:
         pdf.section_title("Multi-Factor Coefficients")
-        pdf.add_chart(fig_mf, h=60)
+        pdf.add_chart(fig_mf, h=55)
     elif not mf.empty:
         pdf.section_title("Multi-Factor Regression")
         pdf.set_font("Arial", "", 8.5)
@@ -1322,23 +1334,27 @@ def build_strategy_pdf(sel_strat, benchmark, window_label, as_of, summary_dict,
                      new_x="LMARGIN", new_y="NEXT")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # PAGE 4: NOTABLE PERIODS
+    # PAGE 5: NOTABLE QUARTERS
     # ══════════════════════════════════════════════════════════════════════════
     pdf.add_page()
     pdf.section_title("Notable Quarters")
-    pdf.add_chart(fig_nq, h=65)
-
-    if fig_ny:
-        pdf.section_title("Notable Calendar Years")
-        pdf.add_chart(fig_ny, h=60)
+    pdf.add_chart(fig_nq, h=70)
 
     # ══════════════════════════════════════════════════════════════════════════
-    # PAGE 5: ROLLING BETAS (if available)
+    # PAGE 6: NOTABLE CALENDAR YEARS
+    # ══════════════════════════════════════════════════════════════════════════
+    if fig_ny:
+        pdf.add_page()
+        pdf.section_title("Notable Calendar Years")
+        pdf.add_chart(fig_ny, h=70)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PAGE 7: ROLLING BETAS (if available)
     # ══════════════════════════════════════════════════════════════════════════
     if fig_roll:
         pdf.add_page()
         pdf.section_title("Rolling Factor Betas (36-Month Window)")
-        pdf.add_chart(fig_roll, h=120)
+        pdf.add_chart(fig_roll, h=80)
 
     # ══════════════════════════════════════════════════════════════════════════
     # FINAL: METHODOLOGY
@@ -1991,24 +2007,27 @@ if "\U0001f4c4" in page:
                                use_container_width=True)
     with ex2:
         if st.button("\U0001f4d1 Generate PDF Report", use_container_width=True):
-            bm = meta.get("benchmark", "N/A")
-            _pdf_hm = ch_heatmap(rt, "avg_excess") if not rt.empty else None
-            _pdf_nq = ch_notable_q(nq)
-            _pdf_mf = ch_mf(mf_tbl) if not mf_tbl.empty else None
-            _pdf_ny = ch_notable_y(ny) if not ny.empty else None
-            _pdf_r36 = ch_rolling(rolling_betas(dates, excess, factors, 36), 36) if n_mo >= 36 else None
-            pdf_bytes = build_strategy_pdf(
-                sel_strat, bm, window_label, as_of_str, summary,
-                sf_tbl, mf_tbl, rt, sp, nq, ny, fig_cum, fig_sf,
-                _pdf_hm, _pdf_nq,
-                fig_mf=_pdf_mf, fig_roll=_pdf_r36, fig_ny=_pdf_ny)
-            if pdf_bytes:
-                cn = sel_strat.replace("|","-").replace("/","-").strip()
-                st.download_button("\u2b07\ufe0f Download PDF", pdf_bytes,
-                                   f"factor_report_{cn}.pdf", "application/pdf",
-                                   use_container_width=True)
-            else:
-                st.error("PDF generation requires fpdf2: `pip install fpdf2`")
+            try:
+                bm = meta.get("benchmark", "N/A")
+                _pdf_hm = ch_heatmap(rt, "avg_excess") if not rt.empty else None
+                _pdf_nq = ch_notable_q(nq)
+                _pdf_mf = ch_mf(mf_tbl) if not mf_tbl.empty else None
+                _pdf_ny = ch_notable_y(ny) if not ny.empty else None
+                _pdf_r36 = ch_rolling(rolling_betas(dates, excess, factors, 36), 36) if n_mo >= 36 else None
+                pdf_bytes = build_strategy_pdf(
+                    sel_strat, bm, window_label, as_of_str, summary,
+                    sf_tbl, mf_tbl, rt, sp, nq, ny, fig_cum, fig_sf,
+                    _pdf_hm, _pdf_nq,
+                    fig_mf=_pdf_mf, fig_roll=_pdf_r36, fig_ny=_pdf_ny)
+                if pdf_bytes:
+                    cn = sel_strat.replace("|","-").replace("/","-").strip()
+                    st.download_button("\u2b07\ufe0f Download PDF", pdf_bytes,
+                                       f"factor_report_{cn}.pdf", "application/pdf",
+                                       use_container_width=True)
+                else:
+                    st.error("PDF generation requires fpdf2: `pip install fpdf2`")
+            except Exception as e:
+                st.error(f"PDF generation error: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
