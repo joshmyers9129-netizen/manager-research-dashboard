@@ -375,6 +375,26 @@ def _drivers(grp, full, fcols, betas=None):
             elif z <= -1.0: out.append(f"{f_} out-of-favor (z={z:+.1f})")
     return "; ".join(out) if out else "No extreme factor regimes"
 
+
+def _drivers_plain(drivers_html):
+    """Convert _drivers() HTML table to readable plain text for PDF/Plotly."""
+    if not drivers_html or not isinstance(drivers_html, str):
+        return ""
+    if not drivers_html.startswith("<"):
+        return drivers_html  # already plain text (z-score fallback)
+    rows = re.findall(
+        r'<tr><td>(.*?)</td><td>(.*?)</td><td>(.*?)</td><td>(.*?)</td></tr>',
+        drivers_html
+    )
+    if not rows:
+        return re.sub(r'<[^>]+>', '', drivers_html)
+    parts = []
+    for factor, ret, contr, pct in rows:
+        pct_str = f" ({pct})" if pct else ""
+        parts.append(f"{factor}: {ret}, {contr}{pct_str}")
+    return " | ".join(parts)
+
+
 def notable_quarters(dates, excess, fdf, n=5, betas=None):
     df = pd.DataFrame({"date":dates.values,"excess":excess.values})
     fc = [c for c in fdf.columns if c!="date"]
@@ -948,7 +968,7 @@ def ch_notable_q(nq):
     fig=go.Figure(go.Bar(x=df["period"],y=df["excess_return"],marker_color=colors,
         text=[f"{v:+.1%}" for v in df["excess_return"]], textposition="outside",
         hovertemplate="%{x}<br>Excess: %{y:.2%}<br>%{customdata}<extra></extra>",
-        customdata=df["factor_drivers"].values))
+        customdata=df["factor_drivers"].apply(_drivers_plain).values))
     _lay(fig, "Best & Worst Quarters: Excess Return")
     fig.update_layout(height=400, xaxis_tickangle=-45, yaxis_tickformat=".1%")
     return fig
@@ -960,7 +980,7 @@ def ch_notable_y(ny):
     fig=go.Figure(go.Bar(x=df["period"],y=df["excess_return"],marker_color=colors,
         text=[f"{v:+.1%}" for v in df["excess_return"]], textposition="outside",
         hovertemplate="%{x}<br>%{y:.2%}<br>%{customdata}<extra></extra>",
-        customdata=df["factor_drivers"].values))
+        customdata=df["factor_drivers"].apply(_drivers_plain).values))
     _lay(fig, "Best & Worst Calendar Years: Excess Return")
     fig.update_layout(height=380, yaxis_tickformat=".1%")
     return fig
@@ -1231,9 +1251,9 @@ def _summary_to_bullets(summary):
         bullets.append(f"Watch: {summary['outlook_watch']}")
     bq, wq = summary.get("best_q"), summary.get("worst_q")
     if bq:
-        bullets.append(f"Best quarter: {bq['period']} ({bq['excess_return']:+.1%}) - {bq['factor_drivers']}")
+        bullets.append(f"Best quarter: {bq['period']} ({bq['excess_return']:+.1%}) - {_drivers_plain(bq['factor_drivers'])}")
     if wq:
-        bullets.append(f"Worst quarter: {wq['period']} ({wq['excess_return']:+.1%}) - {wq['factor_drivers']}")
+        bullets.append(f"Worst quarter: {wq['period']} ({wq['excess_return']:+.1%}) - {_drivers_plain(wq['factor_drivers'])}")
     bullets.append(f"Analysis window: {summary.get('window','N/A')}. Based on {summary.get('n_months','N/A')} months.")
     return bullets
 
@@ -1348,10 +1368,10 @@ def build_strategy_pdf(sel_strat, benchmark, window_label, as_of, summary_dict,
             qy = pdf.get_y()
         if bq:
             pdf._quarter_box(M, qy, half, "Best Quarter", bq["period"],
-                             bq["excess_return"], bq["factor_drivers"], True)
+                             bq["excess_return"], _drivers_plain(bq["factor_drivers"]), True)
         if wq:
             pdf._quarter_box(M + half + 5, qy, half, "Worst Quarter", wq["period"],
-                             wq["excess_return"], wq["factor_drivers"], False)
+                             wq["excess_return"], _drivers_plain(wq["factor_drivers"]), False)
         pdf.set_y(qy + 25)
 
     # Data context bar
@@ -1395,7 +1415,7 @@ def build_strategy_pdf(sel_strat, benchmark, window_label, as_of, summary_dict,
         pdf.section_title("Multi-Factor Regression")
         pdf.set_font("Helvetica", "", 8.5)
         pdf.set_text_color(*pdf._TXT)
-        pdf.cell(0, 5, f"R\u00b2 = {mf.attrs.get('r2',0):.4f}  |  Adj R\u00b2 = {mf.attrs.get('adj_r2',0):.4f}  |  N = {mf.attrs.get('n',0)}",
+        pdf.cell(0, 5, f"R^2 = {mf.attrs.get('r2',0):.4f}  |  Adj R^2 = {mf.attrs.get('adj_r2',0):.4f}  |  N = {mf.attrs.get('n',0)}",
                  new_x="LMARGIN", new_y="NEXT")
         pdf.set_font("Courier", "", 7.5)
         for _, row in mf.iterrows():
