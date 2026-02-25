@@ -586,6 +586,35 @@ def find_pairings(corr_df, peer_df, factor_cols, n=5):
     return pairs[:n]
 
 
+def get_recommended_partners(anchor, corr_df, peer_df, factor_cols, n=3):
+    """For a given anchor strategy, find the top N complementary partners using the same
+    scoring logic as find_pairings(): 60% weight on low correlation, 40% on factor distance."""
+    if corr_df.empty or anchor not in corr_df.columns: return []
+    r1 = peer_df[peer_df["strategy"] == anchor]
+    if r1.empty: return []
+    r1 = r1.iloc[0]
+    candidates = []
+    for s2 in corr_df.columns:
+        if s2 == anchor: continue
+        rho = corr_df.loc[anchor, s2] if anchor in corr_df.index else corr_df.loc[s2, anchor]
+        if np.isnan(rho): continue
+        r2 = peer_df[peer_df["strategy"] == s2]
+        if r2.empty: continue
+        r2 = r2.iloc[0]
+        diffs = []
+        for fc in factor_cols:
+            mf_col = f"mf_{fc}"
+            v1 = r1.get(mf_col, np.nan)
+            v2 = r2.get(mf_col, np.nan)
+            if pd.notna(v1) and pd.notna(v2):
+                diffs.append((v1 - v2) ** 2)
+        factor_dist = np.sqrt(sum(diffs)) if diffs else 0
+        score = (1 - rho) * 0.6 + min(factor_dist * 5, 1) * 0.4
+        candidates.append({"strategy": s2, "score": score})
+    candidates.sort(key=lambda x: x["score"], reverse=True)
+    return [c["strategy"] for c in candidates[:n]]
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  SUMMARY GENERATOR
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2305,9 +2334,22 @@ elif "\U0001f50d" in page:
         cb1, cb2 = st.columns(2)
         with cb1:
             cust_s1 = st.selectbox("Strategy A", peer_strats, index=0, key="cust_s1")
+
+        # Compute top 3 recommended partners for Strategy A using pairing logic
+        rec_partners = get_recommended_partners(cust_s1, corr_matrix, peer_df, fcols, n=3)
+        # Build Strategy B list: recommended partners first, then remaining (excluding A)
+        other_strats = [s for s in peer_strats if s not in rec_partners and s != cust_s1]
+        s2_options = rec_partners + other_strats
+        rec_rank = {s: i + 1 for i, s in enumerate(rec_partners)}
+
+        def _fmt_s2(s, _rr=rec_rank):
+            if s in _rr:
+                return f"\u2605 Recommended Pairing #{_rr[s]}: {_abbrev_strategy(s)}"
+            return _abbrev_strategy(s)
+
         with cb2:
-            default_b = 1 if len(peer_strats) > 1 else 0
-            cust_s2 = st.selectbox("Strategy B", peer_strats, index=default_b, key="cust_s2")
+            cust_s2 = st.selectbox("Strategy B", s2_options, index=0,
+                                   format_func=_fmt_s2, key="cust_s2")
 
         if cust_s1 == cust_s2:
             st.warning("Select two different strategies to compare.")
