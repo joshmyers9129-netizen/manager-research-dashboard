@@ -509,7 +509,8 @@ def compute_peer_table(strategy_df, factor_df, benchmark, window_label, hac=None
         fac = fa.reset_index(drop=True)
         sf = run_sf(ex, fac, hac=hac)
         mf = run_mf(ex, fac, hac=hac)
-        row = {"strategy": strat, "months": info["common"]}
+        row = {"strategy": strat, "months": info["common"],
+               "tracking_error": ex.std() * np.sqrt(12)}
         if not mf.empty:
             row["r2"] = mf.attrs.get("r2", np.nan)
             row["adj_r2"] = mf.attrs.get("adj_r2", np.nan)
@@ -2178,11 +2179,14 @@ elif "\U0001f50d" in page:
     if "alpha_bps" in peer_df.columns:
         disp["Alpha (bps)"] = peer_df["alpha_bps"].map(lambda x: f"{x:+.1f}" if pd.notna(x) else "")
 
+    if "tracking_error" in peer_df.columns:
+        disp["Tracking Error"] = peer_df["tracking_error"].map(lambda x: f"{x:.2%}" if pd.notna(x) else "")
+
     disp = disp.drop(columns=["r2"])
     disp = disp.rename(columns={"strategy": "Strategy", "months": "Months"})
 
     # ── Sort control ──────────────────────────────────────────────────────────
-    sort_options = ["R\u00b2"] + [fl(fc) for fc in fcols if fl(fc) in disp.columns]
+    sort_options = ["R\u00b2", "Tracking Error"] + [fl(fc) for fc in fcols if fl(fc) in disp.columns]
     sort_col = st.selectbox("Sort by", sort_options)
     asc = st.checkbox("Ascending", value=False)
 
@@ -2357,7 +2361,7 @@ elif "\U0001f50d" in page:
                         f'    <div class="blend-val{ret_cls[1]}">{bstats["ann_ret"][1]:+.2%}</div>'
                         f'    <div class="blend-val blend-highlight{ret_cls[2]}">{bstats["ann_ret"][2]:+.2%}</div>'
                         # Ann. volatility
-                        f'    <div class="blend-metric">Ann. Volatility</div>'
+                        f'    <div class="blend-metric">Tracking Error</div>'
                         f'    <div class="blend-val{vol_cls[0]}">{bstats["ann_vol"][0]:.2%}</div>'
                         f'    <div class="blend-val{vol_cls[1]}">{bstats["ann_vol"][1]:.2%}</div>'
                         f'    <div class="blend-val blend-highlight{vol_cls[2]}">{bstats["ann_vol"][2]:.2%}</div>'
@@ -2523,7 +2527,7 @@ elif "\U0001f50d" in page:
                     f'    <div class="blend-val{ret_cls[0]}">{cust_bstats["ann_ret"][0]:+.2%}</div>'
                     f'    <div class="blend-val{ret_cls[1]}">{cust_bstats["ann_ret"][1]:+.2%}</div>'
                     f'    <div class="blend-val blend-highlight{ret_cls[2]}">{cust_bstats["ann_ret"][2]:+.2%}</div>'
-                    f'    <div class="blend-metric">Ann. Volatility</div>'
+                    f'    <div class="blend-metric">Tracking Error</div>'
                     f'    <div class="blend-val{vol_cls[0]}">{cust_bstats["ann_vol"][0]:.2%}</div>'
                     f'    <div class="blend-val{vol_cls[1]}">{cust_bstats["ann_vol"][1]:.2%}</div>'
                     f'    <div class="blend-val blend-highlight{vol_cls[2]}">{cust_bstats["ann_vol"][2]:.2%}</div>'
