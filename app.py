@@ -336,20 +336,30 @@ def _drivers(grp, full, fcols, betas=None):
                 "contribution": beta * factor_cum,
             })
         contribs.sort(key=lambda x: abs(x["contribution"]), reverse=True)
-        parts = []
+        if not contribs:
+            return "No significant factor contributions identified"
+        rows = []
         for c in contribs[:3]:
-            favor = "in-favor" if c["factor_cum"] > 0 else "out-of-favor"
             ow_uw = "OW" if c["beta"] > 0 else "UW"
+            fname = "Growth" if c["fc"] == "style" else fl(c["fc"])
+            factor_label = f"{ow_uw} {fname}"
+            factor_ret = f"{c['factor_cum']:+.1%}"
+            contr = f"~{c['contribution']:+.1%}"
             pct_str = ""
             if abs(period_excess) > 0.001:
                 pct_of_excess = c["contribution"] / period_excess
                 if 0 < pct_of_excess <= 1.5:
-                    pct_str = f" ({pct_of_excess:.0%} of excess return)"
-            parts.append(
-                f"{fl(c['fc'])} {favor} ({c['factor_cum']:+.1%} factor return), "
-                f"manager {ow_uw} \u2192 ~{c['contribution']:+.1%} contribution to excess return{pct_str}"
+                    pct_str = f"{pct_of_excess:.0%}"
+            rows.append(
+                f"<tr><td>{factor_label}</td><td>{factor_ret}</td>"
+                f"<td>{contr}</td><td>{pct_str}</td></tr>"
             )
-        return "; ".join(parts) if parts else "No significant factor contributions identified"
+        rows_html = "".join(rows)
+        return (
+            '<table class="drivers-tbl"><thead><tr>'
+            "<th>Factor</th><th>Factor Ret.</th><th>Contr.</th><th>% of Exc. Ret.</th>"
+            f"</tr></thead><tbody>{rows_html}</tbody></table>"
+        )
     # Fallback: z-score approach when betas not available
     out = []
     for fc in fcols:
@@ -364,6 +374,26 @@ def _drivers(grp, full, fcols, betas=None):
             if z >= 1.0: out.append(f"{f_} in-favor (z={z:+.1f})")
             elif z <= -1.0: out.append(f"{f_} out-of-favor (z={z:+.1f})")
     return "; ".join(out) if out else "No extreme factor regimes"
+
+
+def _drivers_plain(drivers_html):
+    """Convert _drivers() HTML table to readable plain text for PDF/Plotly."""
+    if not drivers_html or not isinstance(drivers_html, str):
+        return ""
+    if not drivers_html.startswith("<"):
+        return drivers_html  # already plain text (z-score fallback)
+    rows = re.findall(
+        r'<tr><td>(.*?)</td><td>(.*?)</td><td>(.*?)</td><td>(.*?)</td></tr>',
+        drivers_html
+    )
+    if not rows:
+        return re.sub(r'<[^>]+>', '', drivers_html)
+    parts = []
+    for factor, ret, contr, pct in rows:
+        pct_str = f" ({pct})" if pct else ""
+        parts.append(f"{factor}: {ret}, {contr}{pct_str}")
+    return " | ".join(parts)
+
 
 def notable_quarters(dates, excess, fdf, n=5, betas=None):
     df = pd.DataFrame({"date":dates.values,"excess":excess.values})
@@ -479,7 +509,8 @@ def compute_peer_table(strategy_df, factor_df, benchmark, window_label, hac=None
         fac = fa.reset_index(drop=True)
         sf = run_sf(ex, fac, hac=hac)
         mf = run_mf(ex, fac, hac=hac)
-        row = {"strategy": strat, "months": info["common"]}
+        row = {"strategy": strat, "months": info["common"],
+               "tracking_error": ex.std() * np.sqrt(12)}
         if not mf.empty:
             row["r2"] = mf.attrs.get("r2", np.nan)
             row["adj_r2"] = mf.attrs.get("adj_r2", np.nan)
@@ -938,7 +969,7 @@ def ch_notable_q(nq):
     fig=go.Figure(go.Bar(x=df["period"],y=df["excess_return"],marker_color=colors,
         text=[f"{v:+.1%}" for v in df["excess_return"]], textposition="outside",
         hovertemplate="%{x}<br>Excess: %{y:.2%}<br>%{customdata}<extra></extra>",
-        customdata=df["factor_drivers"].values))
+        customdata=df["factor_drivers"].apply(_drivers_plain).values))
     _lay(fig, "Best & Worst Quarters: Excess Return")
     fig.update_layout(height=400, xaxis_tickangle=-45, yaxis_tickformat=".1%")
     return fig
@@ -950,7 +981,7 @@ def ch_notable_y(ny):
     fig=go.Figure(go.Bar(x=df["period"],y=df["excess_return"],marker_color=colors,
         text=[f"{v:+.1%}" for v in df["excess_return"]], textposition="outside",
         hovertemplate="%{x}<br>%{y:.2%}<br>%{customdata}<extra></extra>",
-        customdata=df["factor_drivers"].values))
+        customdata=df["factor_drivers"].apply(_drivers_plain).values))
     _lay(fig, "Best & Worst Calendar Years: Excess Return")
     fig.update_layout(height=380, yaxis_tickformat=".1%")
     return fig
@@ -1221,9 +1252,9 @@ def _summary_to_bullets(summary):
         bullets.append(f"Watch: {summary['outlook_watch']}")
     bq, wq = summary.get("best_q"), summary.get("worst_q")
     if bq:
-        bullets.append(f"Best quarter: {bq['period']} ({bq['excess_return']:+.1%}) - {bq['factor_drivers']}")
+        bullets.append(f"Best quarter: {bq['period']} ({bq['excess_return']:+.1%}) - {_drivers_plain(bq['factor_drivers'])}")
     if wq:
-        bullets.append(f"Worst quarter: {wq['period']} ({wq['excess_return']:+.1%}) - {wq['factor_drivers']}")
+        bullets.append(f"Worst quarter: {wq['period']} ({wq['excess_return']:+.1%}) - {_drivers_plain(wq['factor_drivers'])}")
     bullets.append(f"Analysis window: {summary.get('window','N/A')}. Based on {summary.get('n_months','N/A')} months.")
     return bullets
 
@@ -1338,10 +1369,10 @@ def build_strategy_pdf(sel_strat, benchmark, window_label, as_of, summary_dict,
             qy = pdf.get_y()
         if bq:
             pdf._quarter_box(M, qy, half, "Best Quarter", bq["period"],
-                             bq["excess_return"], bq["factor_drivers"], True)
+                             bq["excess_return"], _drivers_plain(bq["factor_drivers"]), True)
         if wq:
             pdf._quarter_box(M + half + 5, qy, half, "Worst Quarter", wq["period"],
-                             wq["excess_return"], wq["factor_drivers"], False)
+                             wq["excess_return"], _drivers_plain(wq["factor_drivers"]), False)
         pdf.set_y(qy + 25)
 
     # Data context bar
@@ -1385,7 +1416,7 @@ def build_strategy_pdf(sel_strat, benchmark, window_label, as_of, summary_dict,
         pdf.section_title("Multi-Factor Regression")
         pdf.set_font("Helvetica", "", 8.5)
         pdf.set_text_color(*pdf._TXT)
-        pdf.cell(0, 5, f"R\u00b2 = {mf.attrs.get('r2',0):.4f}  |  Adj R\u00b2 = {mf.attrs.get('adj_r2',0):.4f}  |  N = {mf.attrs.get('n',0)}",
+        pdf.cell(0, 5, f"R^2 = {mf.attrs.get('r2',0):.4f}  |  Adj R^2 = {mf.attrs.get('adj_r2',0):.4f}  |  N = {mf.attrs.get('n',0)}",
                  new_x="LMARGIN", new_y="NEXT")
         pdf.set_font("Courier", "", 7.5)
         for _, row in mf.iterrows():
@@ -1538,6 +1569,9 @@ div[data-testid="stExpander"] {{ border: 1px solid {C["grid"]}; border-radius: 8
 .qc-best .qc-return {{ color: {C["blue"]}; }}
 .qc-worst .qc-return {{ color: {C["neg"]}; }}
 .sum-qcard .qc-drivers {{ font-size: 0.78rem; color: {C["neut"]}; line-height: 1.4; }}
+.drivers-tbl {{ border-collapse: collapse; font-size: 0.78rem; width: 100%; margin-top: 4px; }}
+.drivers-tbl th {{ color: {C["neut"]}; font-weight: 600; text-align: left; padding: 2px 10px 4px 0; border-bottom: 1px solid {C["grid"]}; }}
+.drivers-tbl td {{ padding: 2px 10px 2px 0; color: {C["neut"]}; }}
 
 .sum-databar {{ background: {C["card"]}; border-radius: 6px; padding: 10px 16px;
                 font-size: 0.78rem; color: {C["neut"]}; margin-top: 16px;
@@ -2145,11 +2179,14 @@ elif "\U0001f50d" in page:
     if "alpha_bps" in peer_df.columns:
         disp["Alpha (bps)"] = peer_df["alpha_bps"].map(lambda x: f"{x:+.1f}" if pd.notna(x) else "")
 
+    if "tracking_error" in peer_df.columns:
+        disp["Tracking Error"] = peer_df["tracking_error"].map(lambda x: f"{x:.2%}" if pd.notna(x) else "")
+
     disp = disp.drop(columns=["r2"])
     disp = disp.rename(columns={"strategy": "Strategy", "months": "Months"})
 
     # ── Sort control ──────────────────────────────────────────────────────────
-    sort_options = ["R\u00b2"] + [fl(fc) for fc in fcols if fl(fc) in disp.columns]
+    sort_options = ["R\u00b2", "Tracking Error"] + [fl(fc) for fc in fcols if fl(fc) in disp.columns]
     sort_col = st.selectbox("Sort by", sort_options)
     asc = st.checkbox("Ascending", value=False)
 
@@ -2324,7 +2361,7 @@ elif "\U0001f50d" in page:
                         f'    <div class="blend-val{ret_cls[1]}">{bstats["ann_ret"][1]:+.2%}</div>'
                         f'    <div class="blend-val blend-highlight{ret_cls[2]}">{bstats["ann_ret"][2]:+.2%}</div>'
                         # Ann. volatility
-                        f'    <div class="blend-metric">Ann. Volatility</div>'
+                        f'    <div class="blend-metric">Tracking Error</div>'
                         f'    <div class="blend-val{vol_cls[0]}">{bstats["ann_vol"][0]:.2%}</div>'
                         f'    <div class="blend-val{vol_cls[1]}">{bstats["ann_vol"][1]:.2%}</div>'
                         f'    <div class="blend-val blend-highlight{vol_cls[2]}">{bstats["ann_vol"][2]:.2%}</div>'
@@ -2490,7 +2527,7 @@ elif "\U0001f50d" in page:
                     f'    <div class="blend-val{ret_cls[0]}">{cust_bstats["ann_ret"][0]:+.2%}</div>'
                     f'    <div class="blend-val{ret_cls[1]}">{cust_bstats["ann_ret"][1]:+.2%}</div>'
                     f'    <div class="blend-val blend-highlight{ret_cls[2]}">{cust_bstats["ann_ret"][2]:+.2%}</div>'
-                    f'    <div class="blend-metric">Ann. Volatility</div>'
+                    f'    <div class="blend-metric">Tracking Error</div>'
                     f'    <div class="blend-val{vol_cls[0]}">{cust_bstats["ann_vol"][0]:.2%}</div>'
                     f'    <div class="blend-val{vol_cls[1]}">{cust_bstats["ann_vol"][1]:.2%}</div>'
                     f'    <div class="blend-val blend-highlight{vol_cls[2]}">{cust_bstats["ann_vol"][2]:.2%}</div>'
