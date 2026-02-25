@@ -316,22 +316,56 @@ def spread_summary(rt, nb=4):
 
 # ── Notable quarters & years ─────────────────────────────────────────────────
 
-def _drivers(grp, full, fcols, z_thresh=1.0):
+def _drivers(grp, full, fcols, betas=None):
+    """Identify top factor contributors for a period.
+    If betas provided, uses contribution = beta x cumulative factor return.
+    Falls back to z-score approach if betas are unavailable."""
+    if betas:
+        period_excess = (1 + grp["excess"]).prod() - 1
+        contribs = []
+        for fc in fcols:
+            beta = betas.get(fc)
+            if beta is None or pd.isna(beta) or abs(beta) < 0.001:
+                continue
+            factor_cum = (1 + grp[fc]).prod() - 1
+            if pd.isna(factor_cum):
+                continue
+            contribs.append({
+                "fc": fc, "beta": beta,
+                "factor_cum": factor_cum,
+                "contribution": beta * factor_cum,
+            })
+        contribs.sort(key=lambda x: abs(x["contribution"]), reverse=True)
+        parts = []
+        for c in contribs[:3]:
+            favor = "in-favor" if c["factor_cum"] > 0 else "out-of-favor"
+            ow_uw = "OW" if c["beta"] > 0 else "UW"
+            pct_str = ""
+            if abs(period_excess) > 0.001:
+                pct_of_excess = c["contribution"] / period_excess
+                if 0 < pct_of_excess <= 1.5:
+                    pct_str = f" ({pct_of_excess:.0%} of excess return)"
+            parts.append(
+                f"{fl(c['fc'])} {favor} ({c['factor_cum']:+.1%} factor return), "
+                f"manager {ow_uw} \u2192 ~{c['contribution']:+.1%} contribution to excess return{pct_str}"
+            )
+        return "; ".join(parts) if parts else "No significant factor contributions identified"
+    # Fallback: z-score approach when betas not available
     out = []
     for fc in fcols:
         mu, sig = full[fc].mean(), full[fc].std()
-        if sig<=0: continue
-        z = (grp[fc].mean()-mu)/sig
-        if fc=="style":
-            if z>=z_thresh: out.append(f"Growth over Value (z={z:+.1f})")
-            elif z<=-z_thresh: out.append(f"Value over Growth (z={z:+.1f})")
+        if sig <= 0: continue
+        z = (grp[fc].mean() - mu) / sig
+        if fc == "style":
+            if z >= 1.0: out.append(f"Growth over Value (z={z:+.1f})")
+            elif z <= -1.0: out.append(f"Value over Growth (z={z:+.1f})")
         else:
             f_ = fl(fc)
-            if z>=z_thresh: out.append(f"{f_} in-favor (z={z:+.1f})")
-            elif z<=-z_thresh: out.append(f"{f_} out-of-favor (z={z:+.1f})")
+            if z >= 1.0: out.append(f"{f_} in-favor (z={z:+.1f})")
+            elif z <= -1.0: out.append(f"{f_} out-of-favor (z={z:+.1f})")
     return "; ".join(out) if out else "No extreme factor regimes"
 
-def notable_quarters(dates, excess, fdf, n=5):
+def notable_quarters(dates, excess, fdf, n=5, betas=None):
     df = pd.DataFrame({"date":dates.values,"excess":excess.values})
     fc = [c for c in fdf.columns if c!="date"]
     for c in fc: df[c]=fdf[c].values
@@ -341,13 +375,13 @@ def notable_quarters(dates, excess, fdf, n=5):
     for q, g in df.groupby("qtr"):
         cum=(1+g["excess"]).prod()-1
         recs.append({"period":str(q),"start":g["date"].iloc[0],"end":g["date"].iloc[-1],
-                      "excess_return":cum,"months":len(g),"factor_drivers":_drivers(g,df,fc)})
+                      "excess_return":cum,"months":len(g),"factor_drivers":_drivers(g,df,fc,betas=betas)})
     qdf=pd.DataFrame(recs)
     best=qdf.nlargest(n,"excess_return").copy(); best["label"]="Best"
     worst=qdf.nsmallest(n,"excess_return").copy(); worst["label"]="Worst"
     return pd.concat([best,worst]).sort_values("start").reset_index(drop=True)
 
-def notable_years(dates, excess, fdf, n=3):
+def notable_years(dates, excess, fdf, n=3, betas=None):
     df = pd.DataFrame({"date":dates.values,"excess":excess.values})
     fc = [c for c in fdf.columns if c!="date"]
     for c in fc: df[c]=fdf[c].values
@@ -358,7 +392,7 @@ def notable_years(dates, excess, fdf, n=3):
         if len(g)<6: continue
         cum=(1+g["excess"]).prod()-1
         recs.append({"period":str(yr),"excess_return":cum,"months":len(g),
-                      "factor_drivers":_drivers(g,df,fc,z_thresh=0.8)})
+                      "factor_drivers":_drivers(g,df,fc,betas=betas)})
     ydf=pd.DataFrame(recs)
     nt=min(n, max(1, len(ydf)//2))
     best=ydf.nlargest(nt,"excess_return").copy(); best["label"]="Best"
@@ -1734,8 +1768,13 @@ if "\U0001f4c4" in page:
     sp = spread_summary(rt, 4) if not rt.empty else pd.DataFrame()
     sf_tbl = run_sf(excess, factors)
     mf_tbl = run_mf(excess, factors) if HAS_SM else pd.DataFrame()
-    nq = notable_quarters(dates, excess, factors)
-    ny = notable_years(dates, excess, factors)
+    _mf_betas = {}
+    if not mf_tbl.empty:
+        for _, _r in mf_tbl[mf_tbl["var"] != "alpha"].iterrows():
+            if pd.notna(_r["coef"]):
+                _mf_betas[_r["var"]] = _r["coef"]
+    nq = notable_quarters(dates, excess, factors, betas=_mf_betas or None)
+    ny = notable_years(dates, excess, factors, betas=_mf_betas or None)
     summary = make_summary(sf_tbl, rt, sp, mf_tbl, n_mo, nq, ny, window_label)
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -1913,7 +1952,7 @@ if "\U0001f4c4" in page:
                 st.markdown(f'<div class="ncard">{icon} <strong>{row["period"]}</strong> \u2014 '
                             f'<strong>{row["excess_return"]:+.1%}</strong><br>'
                             f'<span style="color:{C["neut"]};font-size:0.85rem;padding-left:24px;">'
-                            f'Factor drivers: {row["factor_drivers"]}</span></div>', unsafe_allow_html=True)
+                            f'{row["factor_drivers"]}</span></div>', unsafe_allow_html=True)
     with tab_y:
         fig_ny = ch_notable_y(ny)
         if fig_ny: st.plotly_chart(fig_ny, width='stretch')
@@ -1923,7 +1962,7 @@ if "\U0001f4c4" in page:
                 st.markdown(f'<div class="ncard">{icon} <strong>{row["period"]}</strong> \u2014 '
                             f'<strong>{row["excess_return"]:+.1%}</strong> ({row["months"]}mo)<br>'
                             f'<span style="color:{C["neut"]};font-size:0.85rem;padding-left:24px;">'
-                            f'Factor drivers: {row["factor_drivers"]}</span></div>', unsafe_allow_html=True)
+                            f'{row["factor_drivers"]}</span></div>', unsafe_allow_html=True)
 
     # ══════════════════════════════════════════════════════════════════════════
     # REGIME ANALYSIS
