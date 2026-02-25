@@ -336,20 +336,30 @@ def _drivers(grp, full, fcols, betas=None):
                 "contribution": beta * factor_cum,
             })
         contribs.sort(key=lambda x: abs(x["contribution"]), reverse=True)
-        parts = []
+        if not contribs:
+            return "No significant factor contributions identified"
+        rows = []
         for c in contribs[:3]:
-            favor = "in-favor" if c["factor_cum"] > 0 else "out-of-favor"
             ow_uw = "OW" if c["beta"] > 0 else "UW"
+            fname = "Growth" if c["fc"] == "style" else fl(c["fc"])
+            factor_label = f"{ow_uw} {fname}"
+            factor_ret = f"{c['factor_cum']:+.1%}"
+            contr = f"~{c['contribution']:+.1%}"
             pct_str = ""
             if abs(period_excess) > 0.001:
                 pct_of_excess = c["contribution"] / period_excess
                 if 0 < pct_of_excess <= 1.5:
-                    pct_str = f" ({pct_of_excess:.0%} of excess return)"
-            parts.append(
-                f"{fl(c['fc'])} {favor} ({c['factor_cum']:+.1%} factor return), "
-                f"manager {ow_uw} \u2192 ~{c['contribution']:+.1%} contribution to excess return{pct_str}"
+                    pct_str = f"{pct_of_excess:.0%}"
+            rows.append(
+                f"<tr><td>{factor_label}</td><td>{factor_ret}</td>"
+                f"<td>{contr}</td><td>{pct_str}</td></tr>"
             )
-        return "; ".join(parts) if parts else "No significant factor contributions identified"
+        rows_html = "".join(rows)
+        return (
+            '<table class="drivers-tbl"><thead><tr>'
+            "<th>Factor</th><th>Factor Ret.</th><th>Contr.</th><th>% of Exc. Ret.</th>"
+            f"</tr></thead><tbody>{rows_html}</tbody></table>"
+        )
     # Fallback: z-score approach when betas not available
     out = []
     for fc in fcols:
@@ -1538,6 +1548,9 @@ div[data-testid="stExpander"] {{ border: 1px solid {C["grid"]}; border-radius: 8
 .qc-best .qc-return {{ color: {C["blue"]}; }}
 .qc-worst .qc-return {{ color: {C["neg"]}; }}
 .sum-qcard .qc-drivers {{ font-size: 0.78rem; color: {C["neut"]}; line-height: 1.4; }}
+.drivers-tbl {{ border-collapse: collapse; font-size: 0.78rem; width: 100%; margin-top: 4px; }}
+.drivers-tbl th {{ color: {C["neut"]}; font-weight: 600; text-align: left; padding: 2px 10px 4px 0; border-bottom: 1px solid {C["grid"]}; }}
+.drivers-tbl td {{ padding: 2px 10px 2px 0; color: {C["neut"]}; }}
 
 .sum-databar {{ background: {C["card"]}; border-radius: 6px; padding: 10px 16px;
                 font-size: 0.78rem; color: {C["neut"]}; margin-top: 16px;
