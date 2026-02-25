@@ -316,22 +316,56 @@ def spread_summary(rt, nb=4):
 
 # ── Notable quarters & years ─────────────────────────────────────────────────
 
-def _drivers(grp, full, fcols, z_thresh=1.0):
+def _drivers(grp, full, fcols, betas=None):
+    """Identify top factor contributors for a period.
+    If betas provided, uses contribution = beta x cumulative factor return.
+    Falls back to z-score approach if betas are unavailable."""
+    if betas:
+        period_excess = (1 + grp["excess"]).prod() - 1
+        contribs = []
+        for fc in fcols:
+            beta = betas.get(fc)
+            if beta is None or pd.isna(beta) or abs(beta) < 0.001:
+                continue
+            factor_cum = (1 + grp[fc]).prod() - 1
+            if pd.isna(factor_cum):
+                continue
+            contribs.append({
+                "fc": fc, "beta": beta,
+                "factor_cum": factor_cum,
+                "contribution": beta * factor_cum,
+            })
+        contribs.sort(key=lambda x: abs(x["contribution"]), reverse=True)
+        parts = []
+        for c in contribs[:3]:
+            favor = "in-favor" if c["factor_cum"] > 0 else "out-of-favor"
+            ow_uw = "OW" if c["beta"] > 0 else "UW"
+            pct_str = ""
+            if abs(period_excess) > 0.001:
+                pct_of_excess = c["contribution"] / period_excess
+                if 0 < pct_of_excess <= 1.5:
+                    pct_str = f" ({pct_of_excess:.0%} of excess return)"
+            parts.append(
+                f"{fl(c['fc'])} {favor} ({c['factor_cum']:+.1%} factor return), "
+                f"manager {ow_uw} \u2192 ~{c['contribution']:+.1%} contribution to excess return{pct_str}"
+            )
+        return "; ".join(parts) if parts else "No significant factor contributions identified"
+    # Fallback: z-score approach when betas not available
     out = []
     for fc in fcols:
         mu, sig = full[fc].mean(), full[fc].std()
-        if sig<=0: continue
-        z = (grp[fc].mean()-mu)/sig
-        if fc=="style":
-            if z>=z_thresh: out.append(f"Growth over Value (z={z:+.1f})")
-            elif z<=-z_thresh: out.append(f"Value over Growth (z={z:+.1f})")
+        if sig <= 0: continue
+        z = (grp[fc].mean() - mu) / sig
+        if fc == "style":
+            if z >= 1.0: out.append(f"Growth over Value (z={z:+.1f})")
+            elif z <= -1.0: out.append(f"Value over Growth (z={z:+.1f})")
         else:
             f_ = fl(fc)
-            if z>=z_thresh: out.append(f"{f_} in-favor (z={z:+.1f})")
-            elif z<=-z_thresh: out.append(f"{f_} out-of-favor (z={z:+.1f})")
+            if z >= 1.0: out.append(f"{f_} in-favor (z={z:+.1f})")
+            elif z <= -1.0: out.append(f"{f_} out-of-favor (z={z:+.1f})")
     return "; ".join(out) if out else "No extreme factor regimes"
 
-def notable_quarters(dates, excess, fdf, n=5):
+def notable_quarters(dates, excess, fdf, n=5, betas=None):
     df = pd.DataFrame({"date":dates.values,"excess":excess.values})
     fc = [c for c in fdf.columns if c!="date"]
     for c in fc: df[c]=fdf[c].values
@@ -341,13 +375,13 @@ def notable_quarters(dates, excess, fdf, n=5):
     for q, g in df.groupby("qtr"):
         cum=(1+g["excess"]).prod()-1
         recs.append({"period":str(q),"start":g["date"].iloc[0],"end":g["date"].iloc[-1],
-                      "excess_return":cum,"months":len(g),"factor_drivers":_drivers(g,df,fc)})
+                      "excess_return":cum,"months":len(g),"factor_drivers":_drivers(g,df,fc,betas=betas)})
     qdf=pd.DataFrame(recs)
     best=qdf.nlargest(n,"excess_return").copy(); best["label"]="Best"
     worst=qdf.nsmallest(n,"excess_return").copy(); worst["label"]="Worst"
     return pd.concat([best,worst]).sort_values("start").reset_index(drop=True)
 
-def notable_years(dates, excess, fdf, n=3):
+def notable_years(dates, excess, fdf, n=3, betas=None):
     df = pd.DataFrame({"date":dates.values,"excess":excess.values})
     fc = [c for c in fdf.columns if c!="date"]
     for c in fc: df[c]=fdf[c].values
@@ -358,7 +392,7 @@ def notable_years(dates, excess, fdf, n=3):
         if len(g)<6: continue
         cum=(1+g["excess"]).prod()-1
         recs.append({"period":str(yr),"excess_return":cum,"months":len(g),
-                      "factor_drivers":_drivers(g,df,fc,z_thresh=0.8)})
+                      "factor_drivers":_drivers(g,df,fc,betas=betas)})
     ydf=pd.DataFrame(recs)
     nt=min(n, max(1, len(ydf)//2))
     best=ydf.nlargest(nt,"excess_return").copy(); best["label"]="Best"
@@ -584,6 +618,35 @@ def find_pairings(corr_df, peer_df, factor_cols, n=5):
             })
     pairs.sort(key=lambda x: x["score"], reverse=True)
     return pairs[:n]
+
+
+def get_recommended_partners(anchor, corr_df, peer_df, factor_cols, n=3):
+    """For a given anchor strategy, find the top N complementary partners using the same
+    scoring logic as find_pairings(): 60% weight on low correlation, 40% on factor distance."""
+    if corr_df.empty or anchor not in corr_df.columns: return []
+    r1 = peer_df[peer_df["strategy"] == anchor]
+    if r1.empty: return []
+    r1 = r1.iloc[0]
+    candidates = []
+    for s2 in corr_df.columns:
+        if s2 == anchor: continue
+        rho = corr_df.loc[anchor, s2] if anchor in corr_df.index else corr_df.loc[s2, anchor]
+        if np.isnan(rho): continue
+        r2 = peer_df[peer_df["strategy"] == s2]
+        if r2.empty: continue
+        r2 = r2.iloc[0]
+        diffs = []
+        for fc in factor_cols:
+            mf_col = f"mf_{fc}"
+            v1 = r1.get(mf_col, np.nan)
+            v2 = r2.get(mf_col, np.nan)
+            if pd.notna(v1) and pd.notna(v2):
+                diffs.append((v1 - v2) ** 2)
+        factor_dist = np.sqrt(sum(diffs)) if diffs else 0
+        score = (1 - rho) * 0.6 + min(factor_dist * 5, 1) * 0.4
+        candidates.append({"strategy": s2, "score": score})
+    candidates.sort(key=lambda x: x["score"], reverse=True)
+    return [c["strategy"] for c in candidates[:n]]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -939,15 +1002,6 @@ class ReportPDF(FPDF if HAS_FPDF else object):
         self.benchmark = benchmark
         self.window = window
         self.as_of = as_of
-        self.add_font("Arial", "", r"C:\Windows\Fonts\arial.ttf")
-        self.add_font("Arial", "B", r"C:\Windows\Fonts\arialbd.ttf")
-        self.add_font("Arial", "I", r"C:\Windows\Fonts\ariali.ttf")
-        self.add_font("Arial", "BI", r"C:\Windows\Fonts\arialbi.ttf")
-        self.add_font("Georgia", "", r"C:\Windows\Fonts\georgia.ttf")
-        self.add_font("Georgia", "B", r"C:\Windows\Fonts\georgiab.ttf")
-        self.add_font("Georgia", "I", r"C:\Windows\Fonts\georgiai.ttf")
-        self.add_font("Courier", "", r"C:\Windows\Fonts\cour.ttf")
-        self.add_font("Courier", "B", r"C:\Windows\Fonts\courbd.ttf")
         self.set_auto_page_break(auto=True, margin=18)
 
     @property
@@ -960,11 +1014,11 @@ class ReportPDF(FPDF if HAS_FPDF else object):
         self.rect(0, 0, self.PW, 10, "F")
         self.set_draw_color(*self._BLUE)
         self.line(0, 10, self.PW, 10)
-        self.set_font("Georgia", "B", 7)
+        self.set_font("Times", "B", 7)
         self.set_text_color(*self._WH)
         self.set_xy(self.M, 2)
         self.cell(0, 6, "Manager Research  |  Factor Regime Analysis", align="L")
-        self.set_font("Arial", "", 6.5)
+        self.set_font("Helvetica", "", 6.5)
         self.set_text_color(*self._CREAM)
         self.set_xy(self.PW - 100, 2)
         self.cell(88, 6, f"{self.window}  |  {self.as_of}", align="R")
@@ -975,14 +1029,14 @@ class ReportPDF(FPDF if HAS_FPDF else object):
         self.set_draw_color(*self._GRID)
         self.line(self.M, self.get_y(), self.PW - self.M, self.get_y())
         self.ln(2)
-        self.set_font("Arial", "", 6)
+        self.set_font("Helvetica", "", 6)
         self.set_text_color(*self._NEUT)
         hw = self.cw / 2
         self.cell(hw, 3, f"{self.strategy}  |  {self.benchmark}", align="L")
         self.cell(hw, 3, f"Page {self.page_no()}", align="R")
 
     def section_title(self, title):
-        self.set_font("Georgia", "B", 11)
+        self.set_font("Times", "B", 11)
         self.set_text_color(*self._BLACK)
         self.cell(0, 8, title, new_x="LMARGIN", new_y="NEXT")
         self.set_draw_color(*self._BLUE)
@@ -990,7 +1044,7 @@ class ReportPDF(FPDF if HAS_FPDF else object):
         self.ln(3)
 
     def body_text(self, text):
-        self.set_font("Arial", "", 8.5)
+        self.set_font("Helvetica", "", 8.5)
         self.set_text_color(*self._TXT)
         clean = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
         clean = re.sub(r'\*(.+?)\*', r'\1', clean)
@@ -1012,7 +1066,7 @@ class ReportPDF(FPDF if HAS_FPDF else object):
             self.ln(3)
             os.unlink(tp)
         except Exception as exc:
-            self.set_font("Arial", "I", 8)
+            self.set_font("Helvetica", "I", 8)
             self.cell(0, 5, f"(Chart could not be rendered: {exc})",
                      new_x="LMARGIN", new_y="NEXT")
 
@@ -1025,15 +1079,15 @@ class ReportPDF(FPDF if HAS_FPDF else object):
         self.set_fill_color(*accent)
         self.rect(x, y, w, 2.5, "F")
         self.set_xy(x + 4, y + 5)
-        self.set_font("Arial", "B", 6.5)
+        self.set_font("Helvetica", "B", 6.5)
         self.set_text_color(*self._NEUT)
         self.cell(w - 8, 3, label.upper())
         self.set_xy(x + 4, y + 9.5)
-        self.set_font("Georgia", "B", 15)
+        self.set_font("Times", "B", 15)
         self.set_text_color(*self._BLACK)
         self.cell(w - 8, 6, value)
         self.set_xy(x + 4, y + 17)
-        self.set_font("Arial", "", 6.5)
+        self.set_font("Helvetica", "", 6.5)
         self.set_text_color(*self._NEUT)
         self.cell(w - 8, 3, sub)
 
@@ -1045,10 +1099,10 @@ class ReportPDF(FPDF if HAS_FPDF else object):
         self.rect(self.M, y, row_w, 20, "DF")
         # Left: factor name + direction
         self.set_xy(self.M + 4, y + 2)
-        self.set_font("Georgia", "B", 9)
+        self.set_font("Times", "B", 9)
         self.set_text_color(*self._BLACK)
         self.cell(70, 5, name)
-        self.set_font("Arial", "", 6)
+        self.set_font("Helvetica", "", 6)
         if significant:
             self.set_text_color(*self._BLUE)
             self.cell(30, 5, "SIGNIFICANT")
@@ -1056,7 +1110,7 @@ class ReportPDF(FPDF if HAS_FPDF else object):
             self.set_text_color(*self._NEUT)
             self.cell(30, 5, "NOT SIGNIFICANT")
         self.set_xy(self.M + 4, y + 8)
-        self.set_font("Arial", "", 7)
+        self.set_font("Helvetica", "", 7)
         self.set_text_color(*self._NEUT)
         self.cell(120, 4, direction)
         # Top quartile box
@@ -1064,14 +1118,14 @@ class ReportPDF(FPDF if HAS_FPDF else object):
         self.set_fill_color(220, 240, 248)  # light blue tint
         self.rect(bx1, y + 2, 55, 16, "F")
         self.set_xy(bx1 + 3, y + 3)
-        self.set_font("Arial", "B", 5.5)
+        self.set_font("Helvetica", "B", 5.5)
         self.set_text_color(*self._BLUE)
         self.cell(49, 3, top_label.upper()[:40])
         self.set_xy(bx1 + 3, y + 7)
-        self.set_font("Georgia", "B", 12)
+        self.set_font("Times", "B", 12)
         self.cell(49, 5, f"{top_bps:+.0f} bps/mo")
         self.set_xy(bx1 + 3, y + 13)
-        self.set_font("Arial", "", 5.5)
+        self.set_font("Helvetica", "", 5.5)
         self.set_text_color(*self._NEUT)
         self.cell(49, 3, f"{top_hit:.0f}% months positive" if top_hit is not None else "")
         # Bottom quartile box
@@ -1079,14 +1133,14 @@ class ReportPDF(FPDF if HAS_FPDF else object):
         self.set_fill_color(252, 234, 228)  # light vermillion tint
         self.rect(bx2, y + 2, 55, 16, "F")
         self.set_xy(bx2 + 3, y + 3)
-        self.set_font("Arial", "B", 5.5)
+        self.set_font("Helvetica", "B", 5.5)
         self.set_text_color(*self._RED)
         self.cell(49, 3, bot_label.upper()[:40])
         self.set_xy(bx2 + 3, y + 7)
-        self.set_font("Georgia", "B", 12)
+        self.set_font("Times", "B", 12)
         self.cell(49, 5, f"{bot_bps:+.0f} bps/mo")
         self.set_xy(bx2 + 3, y + 13)
-        self.set_font("Arial", "", 5.5)
+        self.set_font("Helvetica", "", 5.5)
         self.set_text_color(*self._NEUT)
         self.cell(49, 3, f"{bot_hit:.0f}% months positive" if bot_hit is not None else "")
 
@@ -1098,18 +1152,18 @@ class ReportPDF(FPDF if HAS_FPDF else object):
         self.set_fill_color(*accent)
         self.rect(x, y, w, 2.5, "F")
         self.set_xy(x + 4, y + 5)
-        self.set_font("Arial", "B", 6.5)
+        self.set_font("Helvetica", "B", 6.5)
         self.set_text_color(*accent)
         self.cell(w - 8, 3, label.upper())
         self.set_xy(x + 4, y + 9.5)
-        self.set_font("Georgia", "B", 13)
+        self.set_font("Times", "B", 13)
         self.set_text_color(*accent)
         self.cell(35, 5, f"{ret:+.1%}")
-        self.set_font("Georgia", "B", 9)
+        self.set_font("Times", "B", 9)
         self.set_text_color(*self._BLACK)
         self.cell(w - 43, 5, period, align="R")
         self.set_xy(x + 4, y + 16)
-        self.set_font("Arial", "", 6.5)
+        self.set_font("Helvetica", "", 6.5)
         self.set_text_color(*self._NEUT)
         self.cell(w - 8, 3, drivers[:100])
 
@@ -1121,11 +1175,11 @@ class ReportPDF(FPDF if HAS_FPDF else object):
             self.set_fill_color(*self._BLACK)
             self.rect(x, y, w, h, "F")
             self.set_xy(x + 5, y + 3)
-            self.set_font("Arial", "B", 6.5)
+            self.set_font("Helvetica", "B", 6.5)
             self.set_text_color(*self._BLUE)
             self.cell(w - 10, 3, label.upper())
             self.set_xy(x + 5, y + 9)
-            self.set_font("Arial", "", 8)
+            self.set_font("Helvetica", "", 8)
             self.set_text_color(*self._CREAM)
             self.multi_cell(w - 10, 4, display_text)
         else:
@@ -1133,17 +1187,17 @@ class ReportPDF(FPDF if HAS_FPDF else object):
             self.set_draw_color(*self._GRID)
             self.rect(x, y, w, h, "DF")
             self.set_xy(x + 5, y + 3)
-            self.set_font("Arial", "B", 6.5)
+            self.set_font("Helvetica", "B", 6.5)
             self.set_text_color(*self._NEUT)
             self.cell(w - 10, 3, label.upper())
             self.set_xy(x + 5, y + 9)
-            self.set_font("Arial", "", 8)
+            self.set_font("Helvetica", "", 8)
             self.set_text_color(*self._TXT)
             self.multi_cell(w - 10, 4, display_text)
 
     def add_footnotes(self):
         self.ln(5)
-        self.set_font("Arial", "", 6.5)
+        self.set_font("Helvetica", "", 6.5)
         self.set_text_color(*self._NEUT)
         self.multi_cell(0, 3.5, METHODOLOGY)
         self.ln(2)
@@ -1193,11 +1247,11 @@ def build_strategy_pdf(sel_strat, benchmark, window_label, as_of, summary_dict,
     pdf.set_fill_color(*pdf._BLACK)
     pdf.rect(M, y0, CW, 16, "F")
     pdf.set_xy(M + 5, y0 + 2)
-    pdf.set_font("Georgia", "B", 15)
+    pdf.set_font("Times", "B", 15)
     pdf.set_text_color(*pdf._WH)
     pdf.cell(0, 6, "Factor Analysis Summary")
     pdf.set_xy(M + 5, y0 + 9)
-    pdf.set_font("Arial", "", 8.5)
+    pdf.set_font("Helvetica", "", 8.5)
     pdf.set_text_color(*pdf._CREAM)
     pdf.cell(0, 5, f"{sel_strat}  |  Benchmark: {benchmark}")
     pdf.set_y(y0 + 19)
@@ -1225,11 +1279,11 @@ def build_strategy_pdf(sel_strat, benchmark, window_label, as_of, summary_dict,
         pdf.set_draw_color(*pdf._GRID)
         pdf.rect(M, ny0, CW, 18, "DF")
         pdf.set_xy(M + 5, ny0 + 3)
-        pdf.set_font("Arial", "B", 6.5)
+        pdf.set_font("Helvetica", "B", 6.5)
         pdf.set_text_color(*pdf._NEUT)
         pdf.cell(0, 3, "ANALYSIS OVERVIEW")
         pdf.set_xy(M + 5, ny0 + 8)
-        pdf.set_font("Arial", "", 8.5)
+        pdf.set_font("Helvetica", "", 8.5)
         pdf.set_text_color(*pdf._TXT)
         pdf.multi_cell(CW - 10, 4, narr)
         actual_bottom = pdf.get_y() + 2
@@ -1296,7 +1350,7 @@ def build_strategy_pdf(sel_strat, benchmark, window_label, as_of, summary_dict,
     pdf.set_fill_color(*pdf._CARD)
     pdf.rect(M, dy, CW, 7, "F")
     pdf.set_xy(M + 4, dy + 1.5)
-    pdf.set_font("Arial", "", 6.5)
+    pdf.set_font("Helvetica", "", 6.5)
     pdf.set_text_color(*pdf._NEUT)
     n_mo = s.get("n_months", "")
     win = s.get("window", "")
@@ -1329,7 +1383,7 @@ def build_strategy_pdf(sel_strat, benchmark, window_label, as_of, summary_dict,
         pdf.add_chart(fig_mf, h=55)
     elif not mf.empty:
         pdf.section_title("Multi-Factor Regression")
-        pdf.set_font("Arial", "", 8.5)
+        pdf.set_font("Helvetica", "", 8.5)
         pdf.set_text_color(*pdf._TXT)
         pdf.cell(0, 5, f"R\u00b2 = {mf.attrs.get('r2',0):.4f}  |  Adj R\u00b2 = {mf.attrs.get('adj_r2',0):.4f}  |  N = {mf.attrs.get('n',0)}",
                  new_x="LMARGIN", new_y="NEXT")
@@ -1705,8 +1759,13 @@ if "\U0001f4c4" in page:
     sp = spread_summary(rt, 4) if not rt.empty else pd.DataFrame()
     sf_tbl = run_sf(excess, factors)
     mf_tbl = run_mf(excess, factors) if HAS_SM else pd.DataFrame()
-    nq = notable_quarters(dates, excess, factors)
-    ny = notable_years(dates, excess, factors)
+    _mf_betas = {}
+    if not mf_tbl.empty:
+        for _, _r in mf_tbl[mf_tbl["var"] != "alpha"].iterrows():
+            if pd.notna(_r["coef"]):
+                _mf_betas[_r["var"]] = _r["coef"]
+    nq = notable_quarters(dates, excess, factors, betas=_mf_betas or None)
+    ny = notable_years(dates, excess, factors, betas=_mf_betas or None)
     summary = make_summary(sf_tbl, rt, sp, mf_tbl, n_mo, nq, ny, window_label)
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -1884,7 +1943,7 @@ if "\U0001f4c4" in page:
                 st.markdown(f'<div class="ncard">{icon} <strong>{row["period"]}</strong> \u2014 '
                             f'<strong>{row["excess_return"]:+.1%}</strong><br>'
                             f'<span style="color:{C["neut"]};font-size:0.85rem;padding-left:24px;">'
-                            f'Factor drivers: {row["factor_drivers"]}</span></div>', unsafe_allow_html=True)
+                            f'{row["factor_drivers"]}</span></div>', unsafe_allow_html=True)
     with tab_y:
         fig_ny = ch_notable_y(ny)
         if fig_ny: st.plotly_chart(fig_ny, width='stretch')
@@ -1894,7 +1953,7 @@ if "\U0001f4c4" in page:
                 st.markdown(f'<div class="ncard">{icon} <strong>{row["period"]}</strong> \u2014 '
                             f'<strong>{row["excess_return"]:+.1%}</strong> ({row["months"]}mo)<br>'
                             f'<span style="color:{C["neut"]};font-size:0.85rem;padding-left:24px;">'
-                            f'Factor drivers: {row["factor_drivers"]}</span></div>', unsafe_allow_html=True)
+                            f'{row["factor_drivers"]}</span></div>', unsafe_allow_html=True)
 
     # ══════════════════════════════════════════════════════════════════════════
     # REGIME ANALYSIS
@@ -2305,9 +2364,22 @@ elif "\U0001f50d" in page:
         cb1, cb2 = st.columns(2)
         with cb1:
             cust_s1 = st.selectbox("Strategy A", peer_strats, index=0, key="cust_s1")
+
+        # Compute top 3 recommended partners for Strategy A using pairing logic
+        rec_partners = get_recommended_partners(cust_s1, corr_matrix, peer_df, fcols, n=3)
+        # Build Strategy B list: recommended partners first, then remaining (excluding A)
+        other_strats = [s for s in peer_strats if s not in rec_partners and s != cust_s1]
+        s2_options = rec_partners + other_strats
+        rec_rank = {s: i + 1 for i, s in enumerate(rec_partners)}
+
+        def _fmt_s2(s, _rr=rec_rank):
+            if s in _rr:
+                return f"\u2605 Recommended Pairing #{_rr[s]}: {_abbrev_strategy(s)}"
+            return _abbrev_strategy(s)
+
         with cb2:
-            default_b = 1 if len(peer_strats) > 1 else 0
-            cust_s2 = st.selectbox("Strategy B", peer_strats, index=default_b, key="cust_s2")
+            cust_s2 = st.selectbox("Strategy B", s2_options, index=0,
+                                   format_func=_fmt_s2, key="cust_s2")
 
         if cust_s1 == cust_s2:
             st.warning("Select two different strategies to compare.")
