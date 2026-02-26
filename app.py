@@ -173,36 +173,59 @@ def _window_filter(df, window, date_col="date"):
 
 def parse_evestment(fp):
     xls = pd.ExcelFile(fp)
-    sheet = [s for s in xls.sheet_names if s.lower()!="disclaimer"]
-    sheet = sheet[0] if sheet else 0
+    SKIP_SHEETS = {"disclaimer", "general info"}
+    sheets = [s for s in xls.sheet_names if s.lower() not in SKIP_SHEETS]
+    sheet = sheets[0] if sheets else xls.sheet_names[0]
     raw = pd.read_excel(fp, sheet_name=sheet, header=None)
-    hi = None
-    for i in range(min(30,len(raw))):
-        if "Firm Name" in [str(v).strip() for v in raw.iloc[i] if pd.notna(v)]:
-            hi=i; break
-    if hi is None: raise ValueError("No 'Firm Name' header found.")
-    df = pd.read_excel(fp, sheet_name=sheet, header=hi); df.columns = df.columns.str.strip()
     dp = re.compile(r"\((\d{1,2}/\d{4})\s*-")
-    cd = {}
-    for c in df.columns:
-        if "Excess Return" in str(c):
-            m = dp.search(str(c))
-            if m:
-                try: cd[c] = pd.to_datetime(m.group(1), format="%m/%Y").to_period("M").to_timestamp("M")
-                except: pass
-    if not cd: raise ValueError("No Excess Return columns with dates.")
-    recs = []
-    for _, row in df.iterrows():
-        fm, pr, bm = row.get("Firm Name",""), row.get("Product Name",""), row.get("Benchmark","")
-        if pd.isna(fm) or pd.isna(pr): continue
-        fm, pr = str(fm).strip(), str(pr).strip()
-        bm = str(bm).strip() if pd.notna(bm) else ""
-        sn = f"{fm} | {pr}"
-        for c, dt in cd.items():
-            v = row.get(c)
-            if pd.notna(v):
-                try: recs.append({"date":dt,"strategy":sn,"excess_return":float(v),"firm_name":fm,"product_name":pr,"benchmark":bm})
-                except: pass
+    SKIP_FIRMS = {"percentiles","high","low","median","observations","msci index","results displayed in usd"}
+    # Find all header rows (supports multi-block universe exports)
+    header_rows = []
+    for i, row in raw.iterrows():
+        vals = [str(v).strip() for v in row.values if pd.notna(v)]
+        if "Firm Name" in vals and "Product Name" in vals:
+            header_rows.append(i)
+    if not header_rows:
+        # Fallback: scan first 30 rows
+        for i in range(min(30, len(raw))):
+            if "Firm Name" in [str(v).strip() for v in raw.iloc[i] if pd.notna(v)]:
+                header_rows.append(i); break
+    if not header_rows: raise ValueError("No 'Firm Name' header found.")
+    recs = []; seen = set()
+    for hi in header_rows:
+        df = pd.read_excel(fp, sheet_name=sheet, header=hi)
+        # Deduplicate column names
+        new_cols = []; seen_c = {}
+        for c in df.columns:
+            c = str(c).strip()
+            if c in seen_c:
+                seen_c[c] += 1; new_cols.append(f"{c}_{seen_c[c]}")
+            else:
+                seen_c[c] = 0; new_cols.append(c)
+        df.columns = new_cols
+        cd = {}
+        for c in df.columns:
+            if "Excess Return" in str(c):
+                m = dp.search(str(c))
+                if m:
+                    try: cd[c] = pd.to_datetime(m.group(1), format="%m/%Y").to_period("M").to_timestamp("M")
+                    except: pass
+        if not cd: continue
+        for _, row in df.iterrows():
+            fm, pr = row.get("Firm Name",""), row.get("Product Name","")
+            if pd.isna(fm) or pd.isna(pr): continue
+            fm, pr = str(fm).strip(), str(pr).strip()
+            if not fm or not pr or fm.lower() in SKIP_FIRMS: continue
+            bm = row.get("Benchmark","")
+            bm = str(bm).strip() if pd.notna(bm) else ""
+            sn = f"{fm} | {pr}"
+            if sn in seen: continue
+            seen.add(sn)
+            for c, dt in cd.items():
+                v = row.get(c)
+                if pd.notna(v):
+                    try: recs.append({"date":dt,"strategy":sn,"excess_return":float(v),"firm_name":fm,"product_name":pr,"benchmark":bm})
+                    except: pass
     if not recs: raise ValueError("No data extracted.")
     r = pd.DataFrame(recs); r["date"]=pd.to_datetime(r["date"]); return r
 
