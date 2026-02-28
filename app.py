@@ -162,6 +162,8 @@ def _window_filter(df, window, date_col="date"):
     latest = df[date_col].max()
     if "10" in window:
         cutoff = latest - pd.DateOffset(years=10)
+    elif "3" in window:
+        cutoff = latest - pd.DateOffset(years=3)
     else:
         cutoff = latest - pd.DateOffset(years=5)
     return df[df[date_col] >= cutoff].reset_index(drop=True)
@@ -1751,26 +1753,26 @@ if strategy_df is None or factor_df is None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# GLOBAL CONTROLS (top of page, applies everywhere)
+# GLOBAL CONTROLS (page selector + window derived from session state)
 # ══════════════════════════════════════════════════════════════════════════════
-gc1, gc2, gc3 = st.columns([2, 1, 1])
-with gc1:
-    window_label = st.radio("Analysis Window", ["Full Period", "Most Recent 10 Years", "Most Recent 5 Years"],
-                             horizontal=True, key="global_window")
-with gc2:
-    latest = strategy_df["date"].max()
-    st.markdown(f'<span class="wsel">As-of: {latest:%B %Y}</span>', unsafe_allow_html=True)
-with gc3:
-    page = st.radio("View", ["\U0001f4c4 Strategy Detail", "\U0001f50d Peer Comparison"], horizontal=True)
+latest = strategy_df["date"].max()
+as_of_str = f"{latest:%b %Y}"
+page = st.radio("View", ["\U0001f4c4 Strategy Detail", "\U0001f50d Peer Comparison"], horizontal=True, key="main_page_view")
 
-# Apply global window filter to factor data
+# Time period is set inside the Strategy Detail top-controls row (session state).
+# Peer Comparison page uses whatever period is currently selected.
+_sel_period = st.session_state.get("selected_time_period", "Full Period")
+_period_to_window = {
+    "Full Period": "Full Period",
+    "10 Years": "Most Recent 10 Years",
+    "5 Years": "Most Recent 5 Years",
+    "3 Years": "Most Recent 3 Years",
+}
+window_label = _period_to_window.get(_sel_period, "Full Period")
+
+# Apply global window filter
 fdf_w = _window_filter(factor_df.copy(), window_label)
 sdf_w = _window_filter(strategy_df.copy(), window_label)
-
-as_of_str = f"{latest:%b %Y}"
-if window_label != "Full Period":
-    win_start = fdf_w["date"].min()
-    st.caption(f"Window: {win_start:%b %Y} \u2013 {latest:%b %Y} ({len(fdf_w)} factor months)")
 
 st.markdown("---")
 
@@ -1780,25 +1782,50 @@ st.markdown("---")
 # ══════════════════════════════════════════════════════════════════════════════
 if "\U0001f4c4" in page:
 
-    # ── Strategy selector ─────────────────────────────────────────────────────
-    fc1, fc2 = st.columns([1, 2])
-    with fc1:
-        acs = sorted(sdf_w["asset_class"].unique())
-        sel_ac = st.multiselect("Asset class", acs, default=["Equity"] if "Equity" in acs else acs[:1])
-        filt = sdf_w[sdf_w["asset_class"].isin(sel_ac)]
-        if "benchmark" in filt.columns:
-            benches = sorted(filt["benchmark"].unique())
-            sel_bm = st.multiselect("Benchmark (optional)", benches, default=[])
-            if sel_bm: filt = filt[filt["benchmark"].isin(sel_bm)]
-    with fc2:
-        strats = sorted(filt["strategy"].unique())
-        if not strats: st.warning("No strategies match filters."); st.stop()
-        sel_strat = st.selectbox("Select strategy", strats)
-        meta = filt[filt["strategy"]==sel_strat].iloc[0]
-        mc = st.columns(3)
-        mc[0].markdown(f"**Firm:** {meta.get('firm_name','N/A')}")
-        mc[1].markdown(f"**Product:** {meta.get('product_name','N/A')}")
-        mc[2].markdown(f"**Benchmark:** {meta.get('benchmark','N/A')}")
+    # ── Top Controls: Peer Group / Time Period / As-of Date ───────────────────
+    tc1, tc2, tc3 = st.columns(3)
+    with tc1:
+        # Peer group: populated from "universe" field, fallback to unique benchmark names
+        if "universe" in strategy_df.columns:
+            _peer_groups = sorted([
+                str(pg).strip() for pg in strategy_df["universe"].dropna().unique()
+                if str(pg).strip()
+            ])
+        else:
+            _peer_groups = []
+        if not _peer_groups:
+            _peer_groups = sorted([
+                str(b).strip() for b in strategy_df["benchmark"].dropna().unique()
+                if str(b).strip()
+            ])
+        if not _peer_groups:
+            _peer_groups = ["All"]
+        st.selectbox("Peer Group", _peer_groups, key="selected_peer_group")
+    with tc2:
+        _period_opts = ["Full Period", "10 Years", "5 Years", "3 Years"]
+        st.selectbox("Time Period", _period_opts, key="selected_time_period")
+    with tc3:
+        st.markdown(f"**As of:** {latest:%B %Y}")
+
+    # ── Strategy selector filtered by peer group ───────────────────────────────
+    _sel_pg = st.session_state.get("selected_peer_group", "")
+    if "universe" in sdf_w.columns and _sel_pg and _sel_pg != "All":
+        filt = sdf_w[sdf_w["universe"] == _sel_pg]
+    elif "benchmark" in sdf_w.columns and _sel_pg and _sel_pg != "All":
+        filt = sdf_w[sdf_w["benchmark"] == _sel_pg]
+    else:
+        filt = sdf_w
+    if filt.empty:
+        filt = sdf_w  # fallback: show all strategies
+    strats = sorted(filt["strategy"].unique())
+    if not strats: st.warning("No strategies match filters."); st.stop()
+    sel_strat = st.selectbox("Select strategy", strats)
+    meta = filt[filt["strategy"] == sel_strat].iloc[0]
+    st.caption(
+        f"{meta.get('firm_name', 'N/A')} | "
+        f"{meta.get('product_name', 'N/A')} | "
+        f"{meta.get('benchmark', 'N/A')}"
+    )
 
     # ── Align ─────────────────────────────────────────────────────────────────
     sd = sdf_w[sdf_w["strategy"]==sel_strat][["date","excess_return"]].dropna()
@@ -1831,25 +1858,24 @@ if "\U0001f4c4" in page:
 
     st.markdown('<div class="sum-section">', unsafe_allow_html=True)
 
-    # ── KPI row ──────────────────────────────────────────────────────────────
+    # ── KPI row (3 cards; Phase 3 labels) ────────────────────────────────────
+    _kpi_label_rename = {
+        "Factor Explained": "% Explained by Factors",
+        "Monthly Alpha": "Monthly Value-Add (bps)",
+        "Strongest Link": "Biggest Factor Driver",
+    }
     kpi_html = '<div class="sum-kpi-row">'
-    for kpi in summary["kpis"]:
+    for kpi in summary["kpis"][:3]:  # only first 3; drop "Significant Factors"
+        _label = _kpi_label_rename.get(kpi["label"], kpi["label"])
         kpi_html += (
             f'<div class="sum-kpi kpi-{kpi["color"]}">'
-            f'  <div class="kpi-label">{kpi["label"]}</div>'
+            f'  <div class="kpi-label">{_label}</div>'
             f'  <div class="kpi-value">{kpi["value"]}</div>'
             f'  <div class="kpi-sub">{kpi["sub"]}</div>'
             f'</div>'
         )
     kpi_html += '</div>'
     st.markdown(kpi_html, unsafe_allow_html=True)
-
-    # ── Narrative ────────────────────────────────────────────────────────────
-    st.markdown(
-        f'<div class="sum-narrative">'
-        f'  <div class="nar-title">Analysis Overview</div>'
-        f'  <div class="nar-body">{summary["narrative"]}</div>'
-        f'</div>', unsafe_allow_html=True)
 
     # ── Factor relationship cards ────────────────────────────────────────────
     facs = summary["factors"]
@@ -1913,24 +1939,9 @@ if "\U0001f4c4" in page:
         fac_html += '</div>'
         st.markdown(fac_html, unsafe_allow_html=True)
 
-    # ── Outlook cards ────────────────────────────────────────────────────────
+    # ── One-line outlook caption (replaces "What to Expect" card) ────────────
     if summary["outlook"]:
-        outlook_html = '<div class="sum-outlook">'
-        outlook_html += (
-            f'<div class="sum-outlook-card outlook-expect">'
-            f'  <div class="out-label">What to Expect</div>'
-            f'  <div class="out-body">{summary["outlook"]}</div>'
-            f'</div>'
-        )
-        if summary["outlook_watch"]:
-            outlook_html += (
-                f'<div class="sum-outlook-card outlook-watch">'
-                f'  <div class="out-label">What to Watch</div>'
-                f'  <div class="out-body">{summary["outlook_watch"]}</div>'
-                f'</div>'
-            )
-        outlook_html += '</div>'
-        st.markdown(outlook_html, unsafe_allow_html=True)
+        st.caption(f"*{summary['outlook']}*")
 
     # ── Best / Worst quarter cards ───────────────────────────────────────────
     bq, wq = summary["best_q"], summary["worst_q"]
@@ -1957,38 +1968,15 @@ if "\U0001f4c4" in page:
         q_html += '</div>'
         st.markdown(q_html, unsafe_allow_html=True)
 
-    # ── Data context bar ─────────────────────────────────────────────────────
-    dmin, dmax = dates.min(), dates.max()
-    fac_names = ", ".join(fl(c) for c in [col for col in factors.columns if col!="date"])
-    st.markdown(
-        f'<div class="sum-databar">'
-        f'  <span><span class="db-dot"></span> {n_mo} months</span>'
-        f'  <span>{dmin:%b %Y} \u2013 {dmax:%b %Y}</span>'
-        f'  <span>{len([f for f in facs if f["significant"]])} significant factors</span>'
-        f'  <span>{window_label}</span>'
-        f'</div>', unsafe_allow_html=True)
-
     st.markdown('</div>', unsafe_allow_html=True)
 
-    with st.expander("Factor sign conventions"):
-        for fc in [c for c in factors.columns if c!="date"]:
-            tip = FSIGN.get(fc, "")
-            st.markdown(f"**{fl(fc)}:** {tip}" if tip else f"**{fl(fc)}**")
-
     # ══════════════════════════════════════════════════════════════════════════
-    # CUMULATIVE
+    # PERFORMANCE (cumulative chart + notable quarters/years tabs combined)
     # ══════════════════════════════════════════════════════════════════════════
     st.markdown("---")
-    st.header("Performance Overview")
+    st.header("Performance")
     fig_cum = ch_cum(dates, excess, sel_strat)
     if fig_cum: st.plotly_chart(fig_cum, width='stretch')
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # NOTABLE QUARTERS & YEARS
-    # ══════════════════════════════════════════════════════════════════════════
-    st.markdown("---")
-    st.header("When Did It Work? When Didn't It?")
-    st.markdown("*Quarters and years where factor environments mattered most, with drivers underneath.*")
 
     tab_q, tab_y = st.tabs(["\U0001f4c5 Quarters", "\U0001f4ca Calendar Years"])
     with tab_q:
