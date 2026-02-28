@@ -23,12 +23,6 @@ try:
     HAS_PLOTLY = True
 except ImportError:
     HAS_PLOTLY = False
-try:
-    from fpdf import FPDF
-    HAS_FPDF = True
-except ImportError:
-    HAS_FPDF = False
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  BRAND + FACTOR CONFIG
@@ -108,6 +102,28 @@ def _abbrev_strategy(full_name):
         short = re.sub(r'\b' + re.escape(long) + r'\b', abbr, short, flags=re.IGNORECASE)
     short = re.sub(r'\s+', ' ', short).strip().strip("-").strip()
     return f"{firm_first} {short}".strip()
+
+
+def _display_name(full_name: str) -> str:
+    """Return a readable display name from 'Firm Name | Product Name'.
+
+    - If firm's first word already appears in product name → return product only.
+    - Otherwise → prepend first word of firm to product name.
+    - Truncate to 42 chars + ellipsis if result exceeds 45 characters.
+    - If no pipe in full_name, return as-is (truncated to 45 chars).
+    """
+    if "|" not in full_name:
+        return full_name if len(full_name) <= 45 else full_name[:42] + "\u2026"
+    firm, product = full_name.split("|", 1)
+    firm, product = firm.strip(), product.strip()
+    firm_first = firm.split()[0] if firm else ""
+    if firm_first and firm_first.lower() in product.lower():
+        display = product
+    else:
+        display = f"{firm_first} {product}".strip() if firm_first else product
+    if len(display) > 45:
+        display = display[:42] + "\u2026"
+    return display
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -220,13 +236,15 @@ def parse_evestment(fp):
             if not fm or not pr or fm.lower() in SKIP_FIRMS: continue
             bm = row.get("Benchmark","")
             bm = str(bm).strip() if pd.notna(bm) else ""
+            univ = row.get("Universe","")
+            univ = str(univ).strip() if pd.notna(univ) else ""
             sn = f"{fm} | {pr}"
             if sn in seen: continue
             seen.add(sn)
             for c, dt in cd.items():
                 v = row.get(c)
                 if pd.notna(v):
-                    try: recs.append({"date":dt,"strategy":sn,"excess_return":float(v),"firm_name":fm,"product_name":pr,"benchmark":bm})
+                    try: recs.append({"date":dt,"strategy":sn,"excess_return":float(v),"firm_name":fm,"product_name":pr,"benchmark":bm,"universe":univ})
                     except: pass
     if not recs: raise ValueError("No data extracted.")
     r = pd.DataFrame(recs); r["date"]=pd.to_datetime(r["date"]); return r
@@ -295,6 +313,13 @@ def _favor(b):
     if "Bottom" in b: return "Out-of-Favor"
     if "Top" in b: return "In-Favor"
     return "Neutral"
+
+def _bucket_label(b):
+    """Display label for bucket names in charts (Q1 Bottom → Out of Favor, Q4 Top → In Favor)."""
+    b = str(b)
+    if "Bottom" in b: return "Out of Favor"
+    if "Top" in b: return "In Favor"
+    return b
 
 def regime_one(excess, fseries, fname, nb=4):
     tmp = pd.DataFrame({"e":excess.values,"f":fseries.values}).dropna()
@@ -506,13 +531,69 @@ def rolling_betas(dates, excess, fdf, window=36):
     return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
 
 def subperiod_betas(excess, fdf, dates):
-    pds=[("Pre-2020",dates<"2020-01-01"),("2020-2021",(dates>="2020-01-01")&(dates<"2022-01-01")),("2022+",dates>="2022-01-01")]
-    fc=[c for c in fdf.columns if c!="date"]; recs=[]
-    for lbl,mask in pds:
-        if mask.sum()<12: continue
+    """Compute factor betas across dynamically determined subperiods.
+
+    Splits:
+      - >=10 years of data  → thirds (falls back to halves if any period <24 months)
+      - 6–9 years of data   → halves (skips if any period <24 months)
+      - <6 years of data    → returns empty DataFrame
+    Period boundaries are snapped to January 1 of the nearest year.
+    """
+    fc = [c for c in fdf.columns if c != "date"]
+    n = len(dates)
+    span_years = n / 12.0
+
+    if span_years < 6:
+        return pd.DataFrame()
+
+    start_dt = dates.min()
+    end_dt = dates.max()
+
+    def _snap_jan(dt):
+        """Snap timestamp to January 1 of the nearest year."""
+        return pd.Timestamp(year=dt.year + (1 if dt.month > 6 else 0), month=1, day=1)
+
+    def make_periods(n_splits):
+        """Return list of (label, boolean_mask) for n_splits equal periods."""
+        boundaries = []
+        for i in range(1, n_splits):
+            approx = start_dt + pd.DateOffset(months=round(n * i / n_splits))
+            snap = _snap_jan(approx)
+            snap = max(snap, start_dt + pd.DateOffset(months=24))
+            snap = min(snap, end_dt - pd.DateOffset(months=23))
+            boundaries.append(snap)
+
+        periods = []
+        for i in range(n_splits):
+            lo = boundaries[i - 1] if i > 0 else None
+            hi = boundaries[i] if i < n_splits - 1 else None
+            if lo is None:
+                mask = dates < hi
+            elif hi is None:
+                mask = dates >= lo
+            else:
+                mask = (dates >= lo) & (dates < hi)
+            lo_yr = start_dt.year if lo is None else lo.year
+            hi_yr = end_dt.year if hi is None else (hi - pd.DateOffset(months=1)).year
+            periods.append((f"{lo_yr}\u2013{hi_yr}", mask))
+        return periods
+
+    splits_to_try = [3, 2] if span_years >= 10 else [2]
+    chosen = None
+    for n_splits in splits_to_try:
+        candidate = make_periods(n_splits)
+        if all(mask.sum() >= 24 for _, mask in candidate):
+            chosen = candidate
+            break
+
+    if chosen is None:
+        return pd.DataFrame()
+
+    recs = []
+    for lbl, mask in chosen:
         for f in fc:
-            r=_ols(excess[mask].values, fdf[f][mask].values)
-            recs.append({"period":lbl,"factor":f,"beta":r["beta"],"t":r["t"],"p":r["p"],"n_obs":int(mask.sum())})
+            r = _ols(excess[mask].values, fdf[f][mask].values)
+            recs.append({"period": lbl, "factor": f, "beta": r["beta"], "t": r["t"], "p": r["p"], "n_obs": int(mask.sum())})
     return pd.DataFrame(recs)
 
 
@@ -740,7 +821,7 @@ def make_summary(sf, rt, sp, mf, n_months, nq, ny, window_label):
     elif len(sig) > 0:
         r2_val = sig.iloc[0]["r2"] * 100
         r2_src = "single-factor"
-    out["kpis"].append({"label": "Factor Explained", "value": f"{r2_val:.0f}%",
+    out["kpis"].append({"label": "% Explained by Factors", "value": f"{r2_val:.0f}%",
                         "sub": f"{100-r2_val:.0f}% driven by stock selection & timing",
                         "color": "teal" if r2_val >= 20 else "neut"})
 
@@ -751,7 +832,7 @@ def make_summary(sf, rt, sp, mf, n_months, nq, ny, window_label):
             abps = ar.iloc[0]["coef"] * 10000
             ap = ar.iloc[0]["p"]
             sig_tag = "Significant" if ap < 0.05 else "Not significant"
-            out["kpis"].append({"label": "Monthly Alpha", "value": f"{abps:+.0f} bps",
+            out["kpis"].append({"label": "Monthly Value-Add (bps)", "value": f"{abps:+.0f} bps",
                                 "sub": sig_tag, "color": "pos" if abps > 0 else "neg"})
 
     # ── KPI: Strongest relationship ──────────────────────────────────────────
@@ -764,7 +845,7 @@ def make_summary(sf, rt, sp, mf, n_months, nq, ny, window_label):
             sub_k = f"{spread_k:.0f} bps spread between regimes"
         else:
             sub_k = f"{abs(t['impact'] * 10000):.0f} bps impact per 1-SD move"
-        out["kpis"].append({"label": "Strongest Link", "value": fl(fname_k),
+        out["kpis"].append({"label": "Biggest Factor Driver", "value": fl(fname_k),
                             "sub": sub_k, "color": "teal"})
 
     # ── KPI: Total significant factors ───────────────────────────────────────
@@ -880,12 +961,12 @@ def ch_heatmap(rt, metric="avg_excess"):
     pivot.index=[fl(f) for f in pivot.index]
     fmt=(lambda x: f"{x:.1f}%") if metric=="hit_rate" else (lambda x: f"{x*10000:.0f}")
     text=np.vectorize(fmt)(pivot.values)
-    fig=go.Figure(go.Heatmap(z=pivot.values, x=[str(c) for c in pivot.columns], y=list(pivot.index),
+    fig=go.Figure(go.Heatmap(z=pivot.values, x=[_bucket_label(str(c)) for c in pivot.columns], y=list(pivot.index),
         colorscale=[[0,C["neg"]],[0.5,C["wh"]],[1,C["blue"]]], zmid=0,
         text=text, texttemplate="%{text}", textfont=dict(size=12, color=C["txt"]),
         colorbar=dict(title="Hit %" if metric=="hit_rate" else "Bps/Mo"),
-        hovertemplate="Factor: %{y}<br>Bucket: %{x}<br>Value: %{z:.4f}<extra></extra>"))
-    _lay(fig, f"Factor Regime Analysis: {metric.replace('_',' ').title()}")
+        hovertemplate="Factor: %{y}<br>Regime: %{x}<br>Value: %{z:.4f}<extra></extra>"))
+    _lay(fig, f"Strategy Excess Returns by Factor Regime: {metric.replace('_',' ').title()}")
     fig.update_layout(height=max(300, len(pivot)*55+130), yaxis=dict(autorange="reversed"))
     fig.add_annotation(x=0,y=-0.12,xref="paper",yref="paper",text="\u25c0 Out-of-Favor",
                        showarrow=False, font=dict(size=10, color=C["neut"]), xanchor="left")
@@ -898,10 +979,10 @@ def ch_bar(rt, fname):
     sub=rt[rt["factor"]==fname]
     if sub.empty: return None
     colors=BC4 if len(sub)==4 else BC3
-    fig=go.Figure(go.Bar(x=sub["bucket"], y=sub["avg_excess"], marker_color=colors[:len(sub)],
+    fig=go.Figure(go.Bar(x=sub["bucket"].map(lambda b: _bucket_label(str(b))), y=sub["avg_excess"], marker_color=colors[:len(sub)],
         text=[f"{v*10000:.0f}" for v in sub["avg_excess"]], textposition="outside",
         error_y=dict(type="data", array=sub["se"].values*1.96, visible=True, color=C["neut"], thickness=1.5),
-        hovertemplate="Bucket: %{x}<br>Avg: %{y:.4f}<br>Hit: %{customdata[0]:.1f}%<br>N=%{customdata[1]}<extra></extra>",
+        hovertemplate="Regime: %{x}<br>Avg: %{y:.4f}<br>% Months Positive: %{customdata[0]:.1f}%<br>N=%{customdata[1]}<extra></extra>",
         customdata=sub[["hit_rate","count"]].values))
     _lay(fig, f"{fl(fname)}: Avg Excess by Regime (bps, 95% CI)")
     fig.update_layout(height=380, yaxis_title="Avg Excess Return")
@@ -928,7 +1009,7 @@ def ch_mf(mf):
     fig=go.Figure(go.Bar(y=[fl(f) for f in df["var"]], x=df["coef"], orientation="h",
         marker_color=colors, text=[f"{c:.3f}{'*' if p<.05 else ''}" for c,p in zip(df["coef"],df["p"])],
         textposition="outside"))
-    _lay(fig, "Multi-Factor Coefficients (* = significant)")
+    _lay(fig, "Multi-Factor Sensitivity (* = significant)")
     fig.update_layout(height=max(300, len(df)*42+120))
     return fig
 
@@ -940,7 +1021,7 @@ def ch_rolling(rdf, window=36):
         fig.add_trace(go.Scatter(x=sub["date"],y=sub["beta"],name=fl(fc),mode="lines",
                                   line=dict(color=FC[i%len(FC)], width=2)))
     fig.add_hline(y=0, line_dash="dash", line_color="#D5CFC8")
-    _lay(fig, f"Rolling {window}-Month Factor Betas")
+    _lay(fig, f"Factor Relationships Over Time ({window}-Month Rolling)")
     fig.update_layout(height=420, legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="right",x=1))
     return fig
 
@@ -978,7 +1059,7 @@ def ch_peer_corr(corr_df):
         textfont=dict(size=9),
         colorbar=dict(title="Correlation"),
         hovertemplate="Strategy 1: %{y}<br>Strategy 2: %{x}<br>Correlation: %{z:.3f}<extra></extra>"))
-    _lay(fig, "Excess Return Correlations (Pairwise)")
+    _lay(fig, "How Similarly Do These Managers Perform? (Pairwise Correlation)")
     n = len(corr_df)
     fig.update_layout(
         height=max(400, n * 40 + 150),
@@ -1027,239 +1108,6 @@ def ch_explained(r2):
     return fig
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  PDF EXPORT ENGINE
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class ReportPDF(FPDF if HAS_FPDF else object):
-    """Professional landscape PDF report generator."""
-    # Brand colors (from corporate PPT template)
-    _BLACK = (0, 0, 0)
-    _BLUE = (34, 147, 189)    # #2293BD — primary brand blue
-    _RED = (217, 83, 43)      # #D9532B — brand vermillion
-    _GOLD = (250, 165, 26)    # #FAA51A — brand amber
-    _CREAM = (240, 230, 221)  # #F0E6DD — warm cream
-    _CREAM_LT = (251, 247, 243)  # #FBF7F3 — off-white
-    _TXT = (34, 34, 34)       # #222222 — primary text
-    _NEUT = (123, 114, 101)   # #7B7265 — muted text
-    _CARD = (251, 247, 243)   # #FBF7F3 — card bg
-    _NEG = (217, 83, 43)      # same as _RED
-    _WH = (255, 255, 255)
-    _GRID = (232, 224, 216)   # #E8E0D8 — warm grid
-    # Landscape dimensions
-    PW = 297  # page width
-    PH = 210  # page height
-    M = 12    # margin
-
-    def __init__(self, strategy="", benchmark="", window="", as_of=""):
-        if not HAS_FPDF: return
-        super().__init__(orientation="L", format="A4")
-        self.strategy = strategy
-        self.benchmark = benchmark
-        self.window = window
-        self.as_of = as_of
-        self.set_auto_page_break(auto=True, margin=18)
-
-    @property
-    def cw(self):
-        """Content width (page minus margins)."""
-        return self.PW - 2 * self.M
-
-    def header(self):
-        self.set_fill_color(*self._BLACK)
-        self.rect(0, 0, self.PW, 10, "F")
-        self.set_draw_color(*self._BLUE)
-        self.line(0, 10, self.PW, 10)
-        self.set_font("Times", "B", 7)
-        self.set_text_color(*self._WH)
-        self.set_xy(self.M, 2)
-        self.cell(0, 6, "Manager Research  |  Factor Regime Analysis", align="L")
-        self.set_font("Helvetica", "", 6.5)
-        self.set_text_color(*self._CREAM)
-        self.set_xy(self.PW - 100, 2)
-        self.cell(88, 6, f"{self.window}  |  {self.as_of}", align="R")
-        self.ln(12)
-
-    def footer(self):
-        self.set_y(-13)
-        self.set_draw_color(*self._GRID)
-        self.line(self.M, self.get_y(), self.PW - self.M, self.get_y())
-        self.ln(2)
-        self.set_font("Helvetica", "", 6)
-        self.set_text_color(*self._NEUT)
-        hw = self.cw / 2
-        self.cell(hw, 3, f"{self.strategy}  |  {self.benchmark}", align="L")
-        self.cell(hw, 3, f"Page {self.page_no()}", align="R")
-
-    def section_title(self, title):
-        self.set_font("Times", "B", 11)
-        self.set_text_color(*self._BLACK)
-        self.cell(0, 8, title, new_x="LMARGIN", new_y="NEXT")
-        self.set_draw_color(*self._BLUE)
-        self.line(self.M, self.get_y(), self.M + 55, self.get_y())
-        self.ln(3)
-
-    def body_text(self, text):
-        self.set_font("Helvetica", "", 8.5)
-        self.set_text_color(*self._TXT)
-        clean = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
-        clean = re.sub(r'\*(.+?)\*', r'\1', clean)
-        self.multi_cell(0, 4, clean)
-        self.ln(1)
-
-    def add_chart(self, fig, w=None, h=None):
-        w = w or self.cw
-        h = h or 70
-        if fig is None: return
-        # Check if chart would overflow the page; if so, start new page
-        if self.get_y() + h > 178:
-            self.add_page()
-        try:
-            imgb = fig.to_image(format="png", width=int(w * 4), height=int(h * 4), scale=2)
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                f.write(imgb); tp = f.name
-            self.image(tp, x=self.M, w=w)
-            self.ln(3)
-            os.unlink(tp)
-        except Exception as exc:
-            self.set_font("Helvetica", "I", 8)
-            self.cell(0, 5, f"(Chart could not be rendered: {exc})",
-                     new_x="LMARGIN", new_y="NEXT")
-
-    # ── Summary page helpers ─────────────────────────────────────────────────
-    def _kpi_box(self, x, y, w, label, value, sub, accent=None):
-        accent = accent or self._BLUE
-        self.set_fill_color(*self._WH)
-        self.set_draw_color(*self._GRID)
-        self.rect(x, y, w, 22, "DF")
-        self.set_fill_color(*accent)
-        self.rect(x, y, w, 2.5, "F")
-        self.set_xy(x + 4, y + 5)
-        self.set_font("Helvetica", "B", 6.5)
-        self.set_text_color(*self._NEUT)
-        self.cell(w - 8, 3, label.upper())
-        self.set_xy(x + 4, y + 9.5)
-        self.set_font("Times", "B", 15)
-        self.set_text_color(*self._BLACK)
-        self.cell(w - 8, 6, value)
-        self.set_xy(x + 4, y + 17)
-        self.set_font("Helvetica", "", 6.5)
-        self.set_text_color(*self._NEUT)
-        self.cell(w - 8, 3, sub)
-
-    def _factor_row(self, y, name, direction, top_label, top_bps, top_hit,
-                    bot_label, bot_bps, bot_hit, significant):
-        row_w = self.cw
-        self.set_fill_color(*self._WH)
-        self.set_draw_color(*self._GRID)
-        self.rect(self.M, y, row_w, 20, "DF")
-        # Left: factor name + direction
-        self.set_xy(self.M + 4, y + 2)
-        self.set_font("Times", "B", 9)
-        self.set_text_color(*self._BLACK)
-        self.cell(70, 5, name)
-        self.set_font("Helvetica", "", 6)
-        if significant:
-            self.set_text_color(*self._BLUE)
-            self.cell(30, 5, "SIGNIFICANT")
-        else:
-            self.set_text_color(*self._NEUT)
-            self.cell(30, 5, "NOT SIGNIFICANT")
-        self.set_xy(self.M + 4, y + 8)
-        self.set_font("Helvetica", "", 7)
-        self.set_text_color(*self._NEUT)
-        self.cell(120, 4, direction)
-        # Top quartile box
-        bx1 = self.M + row_w - 120
-        self.set_fill_color(220, 240, 248)  # light blue tint
-        self.rect(bx1, y + 2, 55, 16, "F")
-        self.set_xy(bx1 + 3, y + 3)
-        self.set_font("Helvetica", "B", 5.5)
-        self.set_text_color(*self._BLUE)
-        self.cell(49, 3, top_label.upper()[:40])
-        self.set_xy(bx1 + 3, y + 7)
-        self.set_font("Times", "B", 12)
-        self.cell(49, 5, f"{top_bps:+.0f} bps/mo")
-        self.set_xy(bx1 + 3, y + 13)
-        self.set_font("Helvetica", "", 5.5)
-        self.set_text_color(*self._NEUT)
-        self.cell(49, 3, f"{top_hit:.0f}% months positive" if top_hit is not None else "")
-        # Bottom quartile box
-        bx2 = bx1 + 60
-        self.set_fill_color(252, 234, 228)  # light vermillion tint
-        self.rect(bx2, y + 2, 55, 16, "F")
-        self.set_xy(bx2 + 3, y + 3)
-        self.set_font("Helvetica", "B", 5.5)
-        self.set_text_color(*self._RED)
-        self.cell(49, 3, bot_label.upper()[:40])
-        self.set_xy(bx2 + 3, y + 7)
-        self.set_font("Times", "B", 12)
-        self.cell(49, 5, f"{bot_bps:+.0f} bps/mo")
-        self.set_xy(bx2 + 3, y + 13)
-        self.set_font("Helvetica", "", 5.5)
-        self.set_text_color(*self._NEUT)
-        self.cell(49, 3, f"{bot_hit:.0f}% months positive" if bot_hit is not None else "")
-
-    def _quarter_box(self, x, y, w, label, period, ret, drivers, is_best=True):
-        accent = self._BLUE if is_best else self._RED
-        self.set_fill_color(*self._WH)
-        self.set_draw_color(*self._GRID)
-        self.rect(x, y, w, 22, "DF")
-        self.set_fill_color(*accent)
-        self.rect(x, y, w, 2.5, "F")
-        self.set_xy(x + 4, y + 5)
-        self.set_font("Helvetica", "B", 6.5)
-        self.set_text_color(*accent)
-        self.cell(w - 8, 3, label.upper())
-        self.set_xy(x + 4, y + 9.5)
-        self.set_font("Times", "B", 13)
-        self.set_text_color(*accent)
-        self.cell(35, 5, f"{ret:+.1%}")
-        self.set_font("Times", "B", 9)
-        self.set_text_color(*self._BLACK)
-        self.cell(w - 43, 5, period, align="R")
-        self.set_xy(x + 4, y + 16)
-        self.set_font("Helvetica", "", 6.5)
-        self.set_text_color(*self._NEUT)
-        self.cell(w - 8, 3, drivers[:100])
-
-    def _outlook_box(self, x, y, w, h, label, text, dark=False):
-        # Truncate text to avoid overflowing the box
-        max_chars = int((w - 10) / 2.0 * (h - 9) / 4)  # rough estimate
-        display_text = text[:max_chars] + "..." if len(text) > max_chars else text
-        if dark:
-            self.set_fill_color(*self._BLACK)
-            self.rect(x, y, w, h, "F")
-            self.set_xy(x + 5, y + 3)
-            self.set_font("Helvetica", "B", 6.5)
-            self.set_text_color(*self._BLUE)
-            self.cell(w - 10, 3, label.upper())
-            self.set_xy(x + 5, y + 9)
-            self.set_font("Helvetica", "", 8)
-            self.set_text_color(*self._CREAM)
-            self.multi_cell(w - 10, 4, display_text)
-        else:
-            self.set_fill_color(*self._WH)
-            self.set_draw_color(*self._GRID)
-            self.rect(x, y, w, h, "DF")
-            self.set_xy(x + 5, y + 3)
-            self.set_font("Helvetica", "B", 6.5)
-            self.set_text_color(*self._NEUT)
-            self.cell(w - 10, 3, label.upper())
-            self.set_xy(x + 5, y + 9)
-            self.set_font("Helvetica", "", 8)
-            self.set_text_color(*self._TXT)
-            self.multi_cell(w - 10, 4, display_text)
-
-    def add_footnotes(self):
-        self.ln(5)
-        self.set_font("Helvetica", "", 6.5)
-        self.set_text_color(*self._NEUT)
-        self.multi_cell(0, 3.5, METHODOLOGY)
-        self.ln(2)
-        self.multi_cell(0, 3.5, "Factor sign conventions: " +
-                       " | ".join(f"{fl(k)}: {v}" for k, v in FSIGN.items() if k in FDISP))
-
 
 def _summary_to_bullets(summary):
     """Convert structured summary dict to flat bullet strings for PDF/Excel export."""
@@ -1283,204 +1131,6 @@ def _summary_to_bullets(summary):
     bullets.append(f"Analysis window: {summary.get('window','N/A')}. Based on {summary.get('n_months','N/A')} months.")
     return bullets
 
-
-def build_strategy_pdf(sel_strat, benchmark, window_label, as_of, summary_dict,
-                        sf, mf, rt, sp, nq, ny, fig_cum, fig_sf, fig_hm, fig_nq,
-                        fig_mf=None, fig_roll=None, fig_ny=None):
-    if not HAS_FPDF: return None
-    pdf = ReportPDF(strategy=sel_strat, benchmark=benchmark, window=window_label, as_of=as_of)
-    s = summary_dict
-    M = pdf.M
-    CW = pdf.cw  # content width ~273
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # PAGE 1: STRATEGY SUMMARY
-    # ══════════════════════════════════════════════════════════════════════════
-    pdf.add_page()
-
-    # Title block
-    y0 = pdf.get_y()
-    pdf.set_fill_color(*pdf._BLACK)
-    pdf.rect(M, y0, CW, 16, "F")
-    pdf.set_xy(M + 5, y0 + 2)
-    pdf.set_font("Times", "B", 15)
-    pdf.set_text_color(*pdf._WH)
-    pdf.cell(0, 6, "Factor Analysis Summary")
-    pdf.set_xy(M + 5, y0 + 9)
-    pdf.set_font("Helvetica", "", 8.5)
-    pdf.set_text_color(*pdf._CREAM)
-    pdf.cell(0, 5, f"{sel_strat}  |  Benchmark: {benchmark}")
-    pdf.set_y(y0 + 19)
-
-    # KPI row
-    kpis = s.get("kpis", [])
-    if kpis:
-        n_kpis = len(kpis)
-        gap = 5
-        kpi_w = (CW - (n_kpis - 1) * gap) / n_kpis
-        ky = pdf.get_y()
-        for i, kpi in enumerate(kpis):
-            kx = M + i * (kpi_w + gap)
-            accent = pdf._BLUE
-            if kpi.get("color") == "neg": accent = pdf._RED
-            elif kpi.get("color") == "neut": accent = pdf._NEUT
-            pdf._kpi_box(kx, ky, kpi_w, kpi["label"], kpi["value"], kpi["sub"], accent)
-        pdf.set_y(ky + 26)
-
-    # Narrative
-    narr = s.get("narrative", "")
-    if narr:
-        ny0 = pdf.get_y()
-        pdf.set_fill_color(*pdf._WH)
-        pdf.set_draw_color(*pdf._GRID)
-        pdf.rect(M, ny0, CW, 18, "DF")
-        pdf.set_xy(M + 5, ny0 + 3)
-        pdf.set_font("Helvetica", "B", 6.5)
-        pdf.set_text_color(*pdf._NEUT)
-        pdf.cell(0, 3, "ANALYSIS OVERVIEW")
-        pdf.set_xy(M + 5, ny0 + 8)
-        pdf.set_font("Helvetica", "", 8.5)
-        pdf.set_text_color(*pdf._TXT)
-        pdf.multi_cell(CW - 10, 4, narr)
-        actual_bottom = pdf.get_y() + 2
-        if actual_bottom > ny0 + 18:
-            pdf.set_draw_color(*pdf._GRID)
-            pdf.rect(M, ny0, CW, actual_bottom - ny0, "D")
-        pdf.set_y(actual_bottom + 2)
-
-    # Factor regime rows
-    facs = s.get("factors", [])
-    for f in facs:
-        fy = pdf.get_y()
-        if fy + 22 > 178:  # factor row is 20mm + 2mm gap; usable ≈ 178mm
-            pdf.add_page()
-            fy = pdf.get_y()
-        if f["raw"] == "style":
-            top_label = "Top Quartile (Growth-Led)"
-            bot_label = "Bottom Quartile (Value-Led)"
-        else:
-            top_label = f'Top Quartile ({f["name"]} In Favor)'
-            bot_label = f'Bottom Quartile ({f["name"]} Out of Favor)'
-        top_bps = f.get("top_bps", 0) or 0
-        bot_bps = f.get("bot_bps", 0) or 0
-        pdf._factor_row(fy, f["name"], f["direction"], top_label, top_bps,
-                        f.get("hit_top"), bot_label, bot_bps, f.get("hit_bot"),
-                        f["significant"])
-        pdf.set_y(fy + 22)
-
-    # Outlook + quarter cards row (side by side in landscape)
-    outlook = s.get("outlook", "")
-    watch = s.get("outlook_watch", "")
-    bq, wq = s.get("best_q"), s.get("worst_q")
-    oy = pdf.get_y() + 1
-    if oy + 25 > 178:  # outlook boxes are 22mm + 3mm gap
-        pdf.add_page()
-        oy = pdf.get_y()
-    half = (CW - 5) / 2
-    # Left side: outlook
-    if outlook and watch:
-        pdf._outlook_box(M, oy, half, 22, "What to Expect", outlook, dark=True)
-        pdf._outlook_box(M + half + 5, oy, half, 22, "What to Watch", watch, dark=False)
-    elif outlook:
-        pdf._outlook_box(M, oy, CW, 22, "What to Expect", outlook, dark=True)
-    if outlook or watch:
-        pdf.set_y(oy + 25)
-
-    # Best/worst quarter cards
-    if bq or wq:
-        qy = pdf.get_y()
-        if qy + 25 > 178:  # quarter cards are 22mm + 3mm gap
-            pdf.add_page()
-            qy = pdf.get_y()
-        if bq:
-            pdf._quarter_box(M, qy, half, "Best Quarter", bq["period"],
-                             bq["excess_return"], _drivers_plain(bq["factor_drivers"]), True)
-        if wq:
-            pdf._quarter_box(M + half + 5, qy, half, "Worst Quarter", wq["period"],
-                             wq["excess_return"], _drivers_plain(wq["factor_drivers"]), False)
-        pdf.set_y(qy + 25)
-
-    # Data context bar
-    dy = pdf.get_y()
-    if dy + 10 > 178: pdf.add_page(); dy = pdf.get_y()
-    pdf.set_fill_color(*pdf._CARD)
-    pdf.rect(M, dy, CW, 7, "F")
-    pdf.set_xy(M + 4, dy + 1.5)
-    pdf.set_font("Helvetica", "", 6.5)
-    pdf.set_text_color(*pdf._NEUT)
-    n_mo = s.get("n_months", "")
-    win = s.get("window", "")
-    n_sig = len([f for f in facs if f["significant"]])
-    pdf.cell(0, 4, f"{n_mo} months  |  {n_sig} significant factors  |  Window: {win}")
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # PAGE 2: CUMULATIVE EXCESS RETURN
-    # ══════════════════════════════════════════════════════════════════════════
-    pdf.add_page()
-    pdf.section_title("Cumulative Excess Return")
-    pdf.add_chart(fig_cum, h=70)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # PAGE 3: REGIME HEATMAP
-    # ══════════════════════════════════════════════════════════════════════════
-    pdf.add_page()
-    pdf.section_title("Factor Regime Analysis")
-    pdf.add_chart(fig_hm, h=75)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # PAGE 4: FACTOR ANALYSIS CHARTS
-    # ══════════════════════════════════════════════════════════════════════════
-    pdf.add_page()
-    pdf.section_title("Factor Impact")
-    pdf.add_chart(fig_sf, h=70)
-
-    if fig_mf:
-        pdf.section_title("Multi-Factor Coefficients")
-        pdf.add_chart(fig_mf, h=55)
-    elif not mf.empty:
-        pdf.section_title("Multi-Factor Regression")
-        pdf.set_font("Helvetica", "", 8.5)
-        pdf.set_text_color(*pdf._TXT)
-        pdf.cell(0, 5, f"R^2 = {mf.attrs.get('r2',0):.4f}  |  Adj R^2 = {mf.attrs.get('adj_r2',0):.4f}  |  N = {mf.attrs.get('n',0)}",
-                 new_x="LMARGIN", new_y="NEXT")
-        pdf.set_font("Courier", "", 7.5)
-        for _, row in mf.iterrows():
-            lbl = fl(row["var"]) if row["var"]!="alpha" else "Alpha"
-            sig = " *" if row["p"] < 0.05 else ""
-            pdf.cell(0, 4.5, f"  {lbl:20s} {row['coef']:+8.4f}  t={row['t']:6.2f}  p={row['p']:.4f}{sig}",
-                     new_x="LMARGIN", new_y="NEXT")
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # PAGE 5: NOTABLE QUARTERS
-    # ══════════════════════════════════════════════════════════════════════════
-    pdf.add_page()
-    pdf.section_title("Notable Quarters")
-    pdf.add_chart(fig_nq, h=70)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # PAGE 6: NOTABLE CALENDAR YEARS
-    # ══════════════════════════════════════════════════════════════════════════
-    if fig_ny:
-        pdf.add_page()
-        pdf.section_title("Notable Calendar Years")
-        pdf.add_chart(fig_ny, h=70)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # PAGE 7: ROLLING BETAS (if available)
-    # ══════════════════════════════════════════════════════════════════════════
-    if fig_roll:
-        pdf.add_page()
-        pdf.section_title("Rolling Factor Betas (36-Month Window)")
-        pdf.add_chart(fig_roll, h=80)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # FINAL: METHODOLOGY
-    # ══════════════════════════════════════════════════════════════════════════
-    pdf.add_page()
-    pdf.section_title("Methodology & Disclosures")
-    pdf.add_footnotes()
-
-    return bytes(pdf.output())
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  STREAMLIT APP
@@ -1684,7 +1334,7 @@ for k in ["strategy_df", "factor_df", "u_s", "u_f"]:
 # ── Header ────────────────────────────────────────────────────────────────────
 st.markdown("""<div class="mhdr">
     <h1>Manager Research Dashboard</h1>
-    <p>Factor Regime Analysis &amp; Manager Evaluation</p>
+    <p>Strategy Factor Exposure &amp; Peer Comparison</p>
 </div>""", unsafe_allow_html=True)
 
 
@@ -1694,14 +1344,13 @@ st.markdown("""<div class="mhdr">
 sb = st.sidebar
 sb.markdown(f"""<div style="text-align:center; padding:6px 0 10px;">
     <span style="font-size:1.2rem; font-weight:700; color:{C['navy']}; font-family:Georgia,serif;">Manager Research</span><br>
-    <span style="font-size:0.72rem; color:{C['neut']};">Factor Regime Analysis</span>
+    <span style="font-size:0.72rem; color:{C['neut']};">Strategy &amp; Factor Analysis</span>
 </div>""", unsafe_allow_html=True)
 sb.markdown("---")
 
 mpk = []
 if not HAS_PLOTLY: mpk.append("plotly")
 if not HAS_SM: mpk.append("statsmodels")
-if not HAS_FPDF: mpk.append("fpdf2")
 if mpk: sb.warning(f"Optional: `pip install {' '.join(mpk)}`")
 
 # ── Sidebar: upload data ──────────────────────────────────────────────────────
@@ -1858,15 +1507,10 @@ if "\U0001f4c4" in page:
 
     st.markdown('<div class="sum-section">', unsafe_allow_html=True)
 
-    # ── KPI row (3 cards; Phase 3 labels) ────────────────────────────────────
-    _kpi_label_rename = {
-        "Factor Explained": "% Explained by Factors",
-        "Monthly Alpha": "Monthly Value-Add (bps)",
-        "Strongest Link": "Biggest Factor Driver",
-    }
+    # ── KPI row (3 cards) ────────────────────────────────────────────────────
     kpi_html = '<div class="sum-kpi-row">'
     for kpi in summary["kpis"][:3]:  # only first 3; drop "Significant Factors"
-        _label = _kpi_label_rename.get(kpi["label"], kpi["label"])
+        _label = kpi["label"]
         kpi_html += (
             f'<div class="sum-kpi kpi-{kpi["color"]}">'
             f'  <div class="kpi-label">{_label}</div>'
@@ -1931,7 +1575,7 @@ if "\U0001f4c4" in page:
             fac_html += (
                 f'<div class="fac-meta">'
                 f'  <span>Spread: {abs(f.get("top_bps",0) - f.get("bot_bps",0)):.0f} bps</span>'
-                f'  <span>R\u00b2: {f["r2_pct"]:.1f}%</span>'
+                f'  <span>% Explained by Factors: {f["r2_pct"]:.1f}%</span>'
                 f'</div>'
             )
 
@@ -2004,30 +1648,51 @@ if "\U0001f4c4" in page:
     # REGIME ANALYSIS
     # ══════════════════════════════════════════════════════════════════════════
     st.markdown("---")
-    st.header("Factor Regime Analysis")
+    st.header("How Does This Strategy React to Market Environments?")
+    st.markdown("*Monthly factor returns split into quartiles — green means the strategy outperforms in that environment.*")
     st.markdown(f'<div class="rleg"><strong>How to read:</strong> Monthly factor returns ranked into quartiles. '
-                f'<strong>Q1 (Bottom) = Out-of-Favor</strong> (weakest factor returns). '
-                f'<strong>Q4 (Top) = In-Favor</strong> (factor most rewarded). '
-                f'For Growth vs Value: Q4 = Growth-led, Q1 = Value-led. Values in <strong>bps/month</strong>.</div>',
+                f'<strong>Out of Favor</strong> = weakest factor returns. '
+                f'<strong>In Favor</strong> = factor most rewarded. '
+                f'For Growth vs Value: In Favor = Growth-led, Out of Favor = Value-led. Values in <strong>bps/mo</strong>.</div>',
                 unsafe_allow_html=True)
 
     rc1, rc2 = st.columns([1, 3])
     with rc1:
-        hm_metric = st.radio("Metric", ["avg_excess", "hit_rate", "median_excess"])
+        hm_metric = st.radio("Metric", ["Average Monthly Excess", "% of Months Positive", "Median Monthly Excess"])
+        _metric_map = {
+            "Average Monthly Excess": "avg_excess",
+            "% of Months Positive": "hit_rate",
+            "Median Monthly Excess": "median_excess",
+        }
+        hm_metric = _metric_map[hm_metric]
     with rc2:
         fig_hm = ch_heatmap(rt, hm_metric)
         if fig_hm: st.plotly_chart(fig_hm, width='stretch')
 
     if not sp.empty:
-        st.subheader("Spread Summary (In-Favor minus Out-of-Favor)")
+        st.subheader("Spread Summary (In Favor minus Out of Favor)")
         spd = sp.copy()
-        spd["Factor"] = spd["factor"].apply(fl)
+        spd["Factor"] = spd.apply(
+            lambda r: f'<span style="color:{C["blue"]};font-weight:700;">● {fl(r["factor"])}</span>'
+                      if r["significant"] else
+                      f'<span style="color:{C["neut"]};">○ {fl(r["factor"])}</span>', axis=1)
         spd["Spread (bps/mo)"] = (spd["spread"]*10000).round(1)
-        spd["t-stat"] = spd["t_stat"].round(2)
-        spd["Sig?"] = spd["significant"].apply(lambda x: "\u2705" if x else "")
         spd["Interpretation"] = spd["interpretation"]
-        st.dataframe(spd[["Factor","Spread (bps/mo)","t-stat","Sig?","Interpretation"]],
-                     width='stretch', hide_index=True)
+        rows_html = "".join(
+            f'<tr><td style="padding:6px 12px 6px 0;">{row["Factor"]}</td>'
+            f'<td style="text-align:right;padding:6px 12px;">{row["Spread (bps/mo)"]}</td>'
+            f'<td style="padding:6px 0;">{row["Interpretation"]}</td></tr>'
+            for _, row in spd.iterrows()
+        )
+        st.markdown(
+            f'<table style="width:100%;border-collapse:collapse;font-size:0.88rem;">'
+            f'<thead><tr>'
+            f'<th style="text-align:left;border-bottom:2px solid {C["grid"]};padding:6px 12px 6px 0;">Factor</th>'
+            f'<th style="text-align:right;border-bottom:2px solid {C["grid"]};padding:6px 12px;">Spread (bps/mo)</th>'
+            f'<th style="text-align:left;border-bottom:2px solid {C["grid"]};padding:6px 0;">Interpretation</th>'
+            f'</tr></thead><tbody>{rows_html}</tbody></table>',
+            unsafe_allow_html=True)
+        st.caption("● Significant at 95% confidence  ○ Not significant")
 
     with st.expander("\U0001f4ca Per-Factor Bar Charts (95% CI)"):
         fnames = rt["factor"].unique() if not rt.empty else []
@@ -2041,7 +1706,8 @@ if "\U0001f4c4" in page:
     # REGRESSIONS
     # ══════════════════════════════════════════════════════════════════════════
     st.markdown("---")
-    st.header("Factor Exposure (Regressions)")
+    st.header("Which Factors Move This Strategy Most?")
+    st.markdown("*A large bar means this factor has a big impact on the strategy's excess returns when it moves significantly.*")
 
     st.subheader("Single-Factor: Impact per 1-SD Factor Move")
     fig_sf = ch_sf(sf_tbl)
@@ -2049,22 +1715,42 @@ if "\U0001f4c4" in page:
 
     with st.expander("\U0001f4cb Single-Factor Table"):
         sfd = sf_tbl.copy()
-        sfd["Factor"] = sfd["factor"].apply(fl)
+        sfd["Factor"] = sfd.apply(
+            lambda r: f'<span style="color:{C["blue"]};font-weight:700;">● {fl(r["factor"])}</span>'
+                      if r["p"] < 0.05 else
+                      f'<span style="color:{C["neut"]};">○ {fl(r["factor"])}</span>', axis=1)
+        sfd["Sensitivity"] = sfd["beta"].map(lambda x: f"{x:.4f}" if pd.notna(x) else "")
+        sfd["Standardized Sensitivity"] = sfd["std_beta"].map(lambda x: f"{x:.4f}" if pd.notna(x) else "")
         sfd["Impact (bps)"] = (sfd["impact"]*10000).round(1)
-        sfd["Sig"] = sfd["p"].apply(lambda p: "\u2705" if p<0.05 else "")
-        for c in ["alpha","beta","std_beta","t","p","r2"]:
-            sfd[c] = sfd[c].map(lambda x: f"{x:.4f}" if pd.notna(x) else "")
-        st.dataframe(sfd[["Factor","beta","std_beta","Impact (bps)","t","p","r2","Sig"]],
-                     width='stretch', hide_index=True)
+        sfd["% Explained by Factors"] = sfd["r2"].map(lambda x: f"{x*100:.1f}%" if pd.notna(x) else "")
+        rows_html = "".join(
+            f'<tr><td style="padding:5px 12px 5px 0;">{row["Factor"]}</td>'
+            f'<td style="text-align:right;padding:5px 8px;">{row["Sensitivity"]}</td>'
+            f'<td style="text-align:right;padding:5px 8px;">{row["Standardized Sensitivity"]}</td>'
+            f'<td style="text-align:right;padding:5px 8px;">{row["Impact (bps)"]}</td>'
+            f'<td style="text-align:right;padding:5px 0;">{row["% Explained by Factors"]}</td></tr>'
+            for _, row in sfd.iterrows()
+        )
+        st.markdown(
+            f'<table style="width:100%;border-collapse:collapse;font-size:0.85rem;">'
+            f'<thead><tr>'
+            f'<th style="text-align:left;border-bottom:2px solid {C["grid"]};padding:5px 12px 5px 0;">Factor</th>'
+            f'<th style="text-align:right;border-bottom:2px solid {C["grid"]};padding:5px 8px;">Sensitivity</th>'
+            f'<th style="text-align:right;border-bottom:2px solid {C["grid"]};padding:5px 8px;">Standardized Sensitivity</th>'
+            f'<th style="text-align:right;border-bottom:2px solid {C["grid"]};padding:5px 8px;">Impact (bps)</th>'
+            f'<th style="text-align:right;border-bottom:2px solid {C["grid"]};padding:5px 0;">% Explained by Factors</th>'
+            f'</tr></thead><tbody>{rows_html}</tbody></table>',
+            unsafe_allow_html=True)
+        st.caption("● Significant at 95% confidence  ○ Not significant")
 
     if HAS_SM:
-        st.subheader("Multi-Factor Regression")
+        st.subheader("Multi-Factor Sensitivity")
         fig_mf = ch_mf(mf_tbl)
         if fig_mf: st.plotly_chart(fig_mf, width='stretch')
         if not mf_tbl.empty:
             mc1, mc2, mc3, mc4 = st.columns(4)
-            mc1.metric("R\u00b2", f"{mf_tbl.attrs.get('r2',0):.4f}")
-            mc2.metric("Adj. R\u00b2", f"{mf_tbl.attrs.get('adj_r2',0):.4f}")
+            mc1.metric("% Explained by Factors", f"{mf_tbl.attrs.get('r2',0)*100:.1f}%")
+            mc2.metric("Adj. % Explained", f"{mf_tbl.attrs.get('adj_r2',0)*100:.1f}%")
             mc3.metric("F-stat", f"{mf_tbl.attrs.get('f',0):.2f}")
             mc4.metric("Obs", mf_tbl.attrs.get("n", 0))
 
@@ -2072,18 +1758,21 @@ if "\U0001f4c4" in page:
     # STABILITY
     # ══════════════════════════════════════════════════════════════════════════
     st.markdown("---")
-    st.header("Exposure Stability")
-    tab_r, tab_s = st.tabs(["\U0001f4c8 Rolling 36-Mo Betas", "\U0001f4ca Subperiod Check"])
+    st.header("Are These Patterns Consistent Over Time?")
+    tab_r, tab_s = st.tabs(["\U0001f4c8 Factor Relationships Over Time", "\U0001f4ca Across Market Eras"])
     with tab_r:
-        r36 = rolling_betas(dates, excess, factors, 36)
+        _factors_no_cash = factors[[c for c in factors.columns if c.lower() != "cash"]]
+        r36 = rolling_betas(dates, excess, _factors_no_cash, 36)
         fr36 = ch_rolling(r36, 36)
         if fr36: st.plotly_chart(fr36, width='stretch')
     with tab_s:
         st.markdown("*Do betas hold across regimes, or are they period-specific?*")
-        spb = subperiod_betas(excess, factors, dates)
+        _factors_no_cash = factors[[c for c in factors.columns if c.lower() != "cash"]]
+        spb = subperiod_betas(excess, _factors_no_cash, dates)
         if not spb.empty:
             spb["Factor"] = spb["factor"].apply(fl)
             pivot = spb.pivot_table(index="Factor", columns="period", values="beta", aggfunc="first")
+            pivot.columns.name = "Sensitivity by Period"
             st.dataframe(pivot.style.format("{:+.3f}", na_rep="\u2014").background_gradient(
                 cmap="RdBu_r", vmin=-1, vmax=1, axis=None), width='stretch')
             st.caption("Sign consistency across periods = stable exposure. Sign flips = period-specific, less trustworthy.")
@@ -2097,7 +1786,7 @@ if "\U0001f4c4" in page:
     # ══════════════════════════════════════════════════════════════════════════
     st.markdown("---")
     st.header("Export")
-    ex1, ex2 = st.columns(2)
+    ex1, = st.columns(1)
     with ex1:
         if st.button("\U0001f4c4 Generate Excel", use_container_width=True):
             buf = io.BytesIO()
@@ -2118,29 +1807,6 @@ if "\U0001f4c4" in page:
             st.download_button("\u2b07\ufe0f Download Excel", buf, f"factor_{cn}.xlsx",
                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                use_container_width=True)
-    with ex2:
-        if st.button("\U0001f4d1 Generate PDF Report", use_container_width=True):
-            try:
-                bm = meta.get("benchmark", "N/A")
-                _pdf_hm = ch_heatmap(rt, "avg_excess") if not rt.empty else None
-                _pdf_nq = ch_notable_q(nq)
-                _pdf_mf = ch_mf(mf_tbl) if not mf_tbl.empty else None
-                _pdf_ny = ch_notable_y(ny) if not ny.empty else None
-                _pdf_r36 = ch_rolling(rolling_betas(dates, excess, factors, 36), 36) if n_mo >= 36 else None
-                pdf_bytes = build_strategy_pdf(
-                    sel_strat, bm, window_label, as_of_str, summary,
-                    sf_tbl, mf_tbl, rt, sp, nq, ny, fig_cum, fig_sf,
-                    _pdf_hm, _pdf_nq,
-                    fig_mf=_pdf_mf, fig_roll=_pdf_r36, fig_ny=_pdf_ny)
-                if pdf_bytes:
-                    cn = sel_strat.replace("|","-").replace("/","-").strip()
-                    st.download_button("\u2b07\ufe0f Download PDF", pdf_bytes,
-                                       f"factor_report_{cn}.pdf", "application/pdf",
-                                       use_container_width=True)
-                else:
-                    st.error("PDF generation requires fpdf2: `pip install fpdf2`")
-            except Exception as e:
-                st.error(f"PDF generation error: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2166,14 +1832,18 @@ elif "\U0001f50d" in page:
 
     st.markdown(f"**{len(peer_df)} strategies** benchmarked to {sel_bm}")
 
+    st.markdown("---")
+    st.header("How Do These Managers' Factor Tilts Compare?")
+    st.markdown("*Select a factor to see where each manager is positioned.*")
+
     # ── View toggle ───────────────────────────────────────────────────────────
-    view_type = st.radio("Beta type", ["Multi-Factor Betas", "Standardized Betas (per 1-SD)"], horizontal=True)
+    view_type = st.radio("Sensitivity type", ["Multi-Factor Sensitivity", "Standardized Sensitivity"], horizontal=True)
 
     # ── Build display table ───────────────────────────────────────────────────
     fcols = [c for c in factor_df.columns if c != "date"]
     disp = peer_df[["strategy", "months", "r2"]].copy()
     disp["strategy"] = disp["strategy"].apply(_abbrev_strategy)
-    disp["R\u00b2"] = disp["r2"].map(lambda x: f"{x:.3f}" if pd.notna(x) else "")
+    disp["% Explained by Factors"] = disp["r2"].map(lambda x: f"{x:.3f}" if pd.notna(x) else "")
     disp["Unexplained"] = disp["r2"].map(lambda x: f"{(1-x)*100:.0f}%" if pd.notna(x) else "")
 
     if "Multi" in view_type:
@@ -2188,7 +1858,7 @@ elif "\U0001f50d" in page:
                 disp[fl(fc)] = peer_df[col].map(lambda x: f"{x:+.3f}" if pd.notna(x) else "")
 
     if "alpha_bps" in peer_df.columns:
-        disp["Alpha (bps)"] = peer_df["alpha_bps"].map(lambda x: f"{x:+.1f}" if pd.notna(x) else "")
+        disp["Monthly Value-Add (bps)"] = peer_df["alpha_bps"].map(lambda x: f"{x:+.1f}" if pd.notna(x) else "")
 
     if "tracking_error" in peer_df.columns:
         disp["Tracking Error"] = peer_df["tracking_error"].map(lambda x: f"{x:.2%}" if pd.notna(x) else "")
@@ -2197,7 +1867,7 @@ elif "\U0001f50d" in page:
     disp = disp.rename(columns={"strategy": "Strategy", "months": "Months"})
 
     # ── Sort control ──────────────────────────────────────────────────────────
-    sort_options = ["R\u00b2", "Tracking Error"] + [fl(fc) for fc in fcols if fl(fc) in disp.columns]
+    sort_options = ["% Explained by Factors", "Tracking Error"] + [fl(fc) for fc in fcols if fl(fc) in disp.columns]
     sort_col = st.selectbox("Sort by", sort_options)
     asc = st.checkbox("Ascending", value=False)
 
@@ -2216,21 +1886,21 @@ elif "\U0001f50d" in page:
         least_exp = peer_df.loc[peer_df["r2"].idxmin(), "strategy"] if len(peer_df) else ""
 
         ic1, ic2, ic3 = st.columns(3)
-        ic1.metric("Avg R\u00b2", f"{avg_r2:.1f}%")
+        ic1.metric("Avg % Explained by Factors", f"{avg_r2:.1f}%")
         ic2.metric("Most Factor-Driven", _abbrev_strategy(most_exp))
-        ic3.metric("Most Idiosyncratic", _abbrev_strategy(least_exp))
+        ic3.metric("Most Stock-Picker Driven", _abbrev_strategy(least_exp))
 
     st.markdown(f'<div class="ctx"><strong>Methodology:</strong> Multi-factor OLS regression of monthly excess returns on '
-                f'{len(fcols)} factors. Window: {window_label}. Betas shown are {"raw multi-factor coefficients" if "Multi" in view_type else "standardized (per 1-SD factor move)"}. '
-                f'R\u00b2 indicates proportion of excess return variation explained by factors.</div>',
+                f'{len(fcols)} factors. Window: {window_label}. Sensitivities shown are {"raw multi-factor coefficients" if "Multi" in view_type else "standardized (per 1-SD factor move)"}. '
+                f'% Explained by Factors indicates proportion of excess return variation explained by factors.</div>',
                 unsafe_allow_html=True)
 
     # ══════════════════════════════════════════════════════════════════════════
     # EXCESS RETURN CORRELATION
     # ══════════════════════════════════════════════════════════════════════════
     st.markdown("---")
-    st.header("Excess Return Correlations")
-    st.markdown("*How similarly do these strategies behave? Lower correlation = more diversification potential.*")
+    st.header("How Similarly Do These Managers Perform?")
+    st.markdown("*Lower correlation = more diversification potential when paired together.*")
 
     with st.spinner("Computing pairwise correlations..."):
         corr_matrix = compute_peer_corr(sdf_w, sel_bm, window_label)
@@ -2255,7 +1925,7 @@ elif "\U0001f50d" in page:
         # PAIRING RECOMMENDATIONS
         # ══════════════════════════════════════════════════════════════════════
         st.markdown("---")
-        st.header("Recommended Pairings")
+        st.header("Best Diversification Pairs")
         st.markdown("*Strategy pairs with low excess return correlation and complementary factor exposures — combining them may reduce factor-driven drawdowns.*")
 
         pairings = find_pairings(corr_matrix, peer_df, fcols)
@@ -2276,7 +1946,7 @@ elif "\U0001f50d" in page:
                     f'<div class="pair-names" style="display:flex;align-items:flex-start;">'
                     f'  <span class="pair-rank">{idx}</span>'
                     f'  <div>'
-                    f'    <div class="pair-label">Recommended Pair</div>'
+                    f'    <div class="pair-label">Best Diversification Pair</div>'
                     f'    <div class="pair-strat">{s1_short}</div>'
                     f'    <div class="pair-strat" style="color:{C["neut"]};">+ {s2_short}</div>'
                     f'  </div>'
@@ -2309,12 +1979,12 @@ elif "\U0001f50d" in page:
                             f'    <div class="tilt-strat">'
                             f'      <div class="tilt-strat-name">{s1_short}</div>'
                             f'      <div class="tilt-strat-label {s1_cls}">{s1_tilt}</div>'
-                            f'      <div class="tilt-strat-beta">Beta: {exp["s1_beta"]:+.3f}</div>'
+                            f'      <div class="tilt-strat-beta">Tilt: {exp["s1_beta"]:+.3f}</div>'
                             f'    </div>'
                             f'    <div class="tilt-strat">'
                             f'      <div class="tilt-strat-name">{s2_short}</div>'
                             f'      <div class="tilt-strat-label {s2_cls}">{s2_tilt}</div>'
-                            f'      <div class="tilt-strat-beta">Beta: {exp["s2_beta"]:+.3f}</div>'
+                            f'      <div class="tilt-strat-beta">Tilt: {exp["s2_beta"]:+.3f}</div>'
                             f'    </div>'
                             f'  </div>'
                             f'</div>'
@@ -2422,7 +2092,7 @@ elif "\U0001f50d" in page:
 
         def _fmt_s2(s, _rr=rec_rank):
             if s in _rr:
-                return f"\u2605 Recommended Pairing #{_rr[s]}: {_abbrev_strategy(s)}"
+                return f"\u2605 Best Pair #{_rr[s]}: {_abbrev_strategy(s)}"
             return _abbrev_strategy(s)
 
         with cb2:
