@@ -294,6 +294,13 @@ def _favor(b):
     if "Top" in b: return "In-Favor"
     return "Neutral"
 
+def _bucket_label(b):
+    """Display label for bucket names in charts (Q1 Bottom → Out of Favor, Q4 Top → In Favor)."""
+    b = str(b)
+    if "Bottom" in b: return "Out of Favor"
+    if "Top" in b: return "In Favor"
+    return b
+
 def regime_one(excess, fseries, fname, nb=4):
     tmp = pd.DataFrame({"e":excess.values,"f":fseries.values}).dropna()
     if len(tmp)<nb*2: return pd.DataFrame()
@@ -738,7 +745,7 @@ def make_summary(sf, rt, sp, mf, n_months, nq, ny, window_label):
     elif len(sig) > 0:
         r2_val = sig.iloc[0]["r2"] * 100
         r2_src = "single-factor"
-    out["kpis"].append({"label": "Factor Explained", "value": f"{r2_val:.0f}%",
+    out["kpis"].append({"label": "% Explained by Factors", "value": f"{r2_val:.0f}%",
                         "sub": f"{100-r2_val:.0f}% driven by stock selection & timing",
                         "color": "teal" if r2_val >= 20 else "neut"})
 
@@ -749,7 +756,7 @@ def make_summary(sf, rt, sp, mf, n_months, nq, ny, window_label):
             abps = ar.iloc[0]["coef"] * 10000
             ap = ar.iloc[0]["p"]
             sig_tag = "Significant" if ap < 0.05 else "Not significant"
-            out["kpis"].append({"label": "Monthly Alpha", "value": f"{abps:+.0f} bps",
+            out["kpis"].append({"label": "Monthly Value-Add (bps)", "value": f"{abps:+.0f} bps",
                                 "sub": sig_tag, "color": "pos" if abps > 0 else "neg"})
 
     # ── KPI: Strongest relationship ──────────────────────────────────────────
@@ -762,7 +769,7 @@ def make_summary(sf, rt, sp, mf, n_months, nq, ny, window_label):
             sub_k = f"{spread_k:.0f} bps spread between regimes"
         else:
             sub_k = f"{abs(t['impact'] * 10000):.0f} bps impact per 1-SD move"
-        out["kpis"].append({"label": "Strongest Link", "value": fl(fname_k),
+        out["kpis"].append({"label": "Biggest Factor Driver", "value": fl(fname_k),
                             "sub": sub_k, "color": "teal"})
 
     # ── KPI: Total significant factors ───────────────────────────────────────
@@ -878,12 +885,12 @@ def ch_heatmap(rt, metric="avg_excess"):
     pivot.index=[fl(f) for f in pivot.index]
     fmt=(lambda x: f"{x:.1f}%") if metric=="hit_rate" else (lambda x: f"{x*10000:.0f}")
     text=np.vectorize(fmt)(pivot.values)
-    fig=go.Figure(go.Heatmap(z=pivot.values, x=[str(c) for c in pivot.columns], y=list(pivot.index),
+    fig=go.Figure(go.Heatmap(z=pivot.values, x=[_bucket_label(str(c)) for c in pivot.columns], y=list(pivot.index),
         colorscale=[[0,C["neg"]],[0.5,C["wh"]],[1,C["blue"]]], zmid=0,
         text=text, texttemplate="%{text}", textfont=dict(size=12, color=C["txt"]),
         colorbar=dict(title="Hit %" if metric=="hit_rate" else "Bps/Mo"),
-        hovertemplate="Factor: %{y}<br>Bucket: %{x}<br>Value: %{z:.4f}<extra></extra>"))
-    _lay(fig, f"Factor Regime Analysis: {metric.replace('_',' ').title()}")
+        hovertemplate="Factor: %{y}<br>Regime: %{x}<br>Value: %{z:.4f}<extra></extra>"))
+    _lay(fig, f"Strategy Excess Returns by Factor Regime: {metric.replace('_',' ').title()}")
     fig.update_layout(height=max(300, len(pivot)*55+130), yaxis=dict(autorange="reversed"))
     fig.add_annotation(x=0,y=-0.12,xref="paper",yref="paper",text="\u25c0 Out-of-Favor",
                        showarrow=False, font=dict(size=10, color=C["neut"]), xanchor="left")
@@ -896,10 +903,10 @@ def ch_bar(rt, fname):
     sub=rt[rt["factor"]==fname]
     if sub.empty: return None
     colors=BC4 if len(sub)==4 else BC3
-    fig=go.Figure(go.Bar(x=sub["bucket"], y=sub["avg_excess"], marker_color=colors[:len(sub)],
+    fig=go.Figure(go.Bar(x=sub["bucket"].map(lambda b: _bucket_label(str(b))), y=sub["avg_excess"], marker_color=colors[:len(sub)],
         text=[f"{v*10000:.0f}" for v in sub["avg_excess"]], textposition="outside",
         error_y=dict(type="data", array=sub["se"].values*1.96, visible=True, color=C["neut"], thickness=1.5),
-        hovertemplate="Bucket: %{x}<br>Avg: %{y:.4f}<br>Hit: %{customdata[0]:.1f}%<br>N=%{customdata[1]}<extra></extra>",
+        hovertemplate="Regime: %{x}<br>Avg: %{y:.4f}<br>% Months Positive: %{customdata[0]:.1f}%<br>N=%{customdata[1]}<extra></extra>",
         customdata=sub[["hit_rate","count"]].values))
     _lay(fig, f"{fl(fname)}: Avg Excess by Regime (bps, 95% CI)")
     fig.update_layout(height=380, yaxis_title="Avg Excess Return")
@@ -926,7 +933,7 @@ def ch_mf(mf):
     fig=go.Figure(go.Bar(y=[fl(f) for f in df["var"]], x=df["coef"], orientation="h",
         marker_color=colors, text=[f"{c:.3f}{'*' if p<.05 else ''}" for c,p in zip(df["coef"],df["p"])],
         textposition="outside"))
-    _lay(fig, "Multi-Factor Coefficients (* = significant)")
+    _lay(fig, "Multi-Factor Sensitivity (* = significant)")
     fig.update_layout(height=max(300, len(df)*42+120))
     return fig
 
@@ -938,7 +945,7 @@ def ch_rolling(rdf, window=36):
         fig.add_trace(go.Scatter(x=sub["date"],y=sub["beta"],name=fl(fc),mode="lines",
                                   line=dict(color=FC[i%len(FC)], width=2)))
     fig.add_hline(y=0, line_dash="dash", line_color="#D5CFC8")
-    _lay(fig, f"Rolling {window}-Month Factor Betas")
+    _lay(fig, f"Factor Relationships Over Time ({window}-Month Rolling)")
     fig.update_layout(height=420, legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="right",x=1))
     return fig
 
@@ -976,7 +983,7 @@ def ch_peer_corr(corr_df):
         textfont=dict(size=9),
         colorbar=dict(title="Correlation"),
         hovertemplate="Strategy 1: %{y}<br>Strategy 2: %{x}<br>Correlation: %{z:.3f}<extra></extra>"))
-    _lay(fig, "Excess Return Correlations (Pairwise)")
+    _lay(fig, "How Similarly Do These Managers Perform? (Pairwise Correlation)")
     n = len(corr_df)
     fig.update_layout(
         height=max(400, n * 40 + 150),
@@ -1071,7 +1078,7 @@ class ReportPDF(FPDF if HAS_FPDF else object):
         self.set_font("Times", "B", 7)
         self.set_text_color(*self._WH)
         self.set_xy(self.M, 2)
-        self.cell(0, 6, "Manager Research  |  Factor Regime Analysis", align="L")
+        self.cell(0, 6, "Manager Research  |  Strategy Factor Analysis", align="L")
         self.set_font("Helvetica", "", 6.5)
         self.set_text_color(*self._CREAM)
         self.set_xy(self.PW - 100, 2)
@@ -1422,7 +1429,7 @@ def build_strategy_pdf(sel_strat, benchmark, window_label, as_of, summary_dict,
     # PAGE 3: REGIME HEATMAP
     # ══════════════════════════════════════════════════════════════════════════
     pdf.add_page()
-    pdf.section_title("Factor Regime Analysis")
+    pdf.section_title("How Does This Strategy React to Market Environments?")
     pdf.add_chart(fig_hm, h=75)
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -1682,7 +1689,7 @@ for k in ["strategy_df", "factor_df", "u_s", "u_f"]:
 # ── Header ────────────────────────────────────────────────────────────────────
 st.markdown("""<div class="mhdr">
     <h1>Manager Research Dashboard</h1>
-    <p>Factor Regime Analysis &amp; Manager Evaluation</p>
+    <p>Strategy Factor Exposure &amp; Peer Comparison</p>
 </div>""", unsafe_allow_html=True)
 
 
@@ -1692,7 +1699,7 @@ st.markdown("""<div class="mhdr">
 sb = st.sidebar
 sb.markdown(f"""<div style="text-align:center; padding:6px 0 10px;">
     <span style="font-size:1.2rem; font-weight:700; color:{C['navy']}; font-family:Georgia,serif;">Manager Research</span><br>
-    <span style="font-size:0.72rem; color:{C['neut']};">Factor Regime Analysis</span>
+    <span style="font-size:0.72rem; color:{C['neut']};">Strategy &amp; Factor Analysis</span>
 </div>""", unsafe_allow_html=True)
 sb.markdown("---")
 
@@ -1905,7 +1912,7 @@ if "\U0001f4c4" in page:
             fac_html += (
                 f'<div class="fac-meta">'
                 f'  <span>Spread: {abs(f.get("top_bps",0) - f.get("bot_bps",0)):.0f} bps</span>'
-                f'  <span>R\u00b2: {f["r2_pct"]:.1f}%</span>'
+                f'  <span>% Explained by Factors: {f["r2_pct"]:.1f}%</span>'
                 f'</div>'
             )
 
@@ -2016,30 +2023,51 @@ if "\U0001f4c4" in page:
     # REGIME ANALYSIS
     # ══════════════════════════════════════════════════════════════════════════
     st.markdown("---")
-    st.header("Factor Regime Analysis")
+    st.header("How Does This Strategy React to Market Environments?")
+    st.markdown("*Monthly factor returns split into quartiles — green means the strategy outperforms in that environment.*")
     st.markdown(f'<div class="rleg"><strong>How to read:</strong> Monthly factor returns ranked into quartiles. '
-                f'<strong>Q1 (Bottom) = Out-of-Favor</strong> (weakest factor returns). '
-                f'<strong>Q4 (Top) = In-Favor</strong> (factor most rewarded). '
-                f'For Growth vs Value: Q4 = Growth-led, Q1 = Value-led. Values in <strong>bps/month</strong>.</div>',
+                f'<strong>Out of Favor</strong> = weakest factor returns. '
+                f'<strong>In Favor</strong> = factor most rewarded. '
+                f'For Growth vs Value: In Favor = Growth-led, Out of Favor = Value-led. Values in <strong>bps/mo</strong>.</div>',
                 unsafe_allow_html=True)
 
     rc1, rc2 = st.columns([1, 3])
     with rc1:
-        hm_metric = st.radio("Metric", ["avg_excess", "hit_rate", "median_excess"])
+        hm_metric = st.radio("Metric", ["Average Monthly Excess", "% of Months Positive", "Median Monthly Excess"])
+        _metric_map = {
+            "Average Monthly Excess": "avg_excess",
+            "% of Months Positive": "hit_rate",
+            "Median Monthly Excess": "median_excess",
+        }
+        hm_metric = _metric_map[hm_metric]
     with rc2:
         fig_hm = ch_heatmap(rt, hm_metric)
         if fig_hm: st.plotly_chart(fig_hm, width='stretch')
 
     if not sp.empty:
-        st.subheader("Spread Summary (In-Favor minus Out-of-Favor)")
+        st.subheader("Spread Summary (In Favor minus Out of Favor)")
         spd = sp.copy()
-        spd["Factor"] = spd["factor"].apply(fl)
+        spd["Factor"] = spd.apply(
+            lambda r: f'<span style="color:{C["blue"]};font-weight:700;">● {fl(r["factor"])}</span>'
+                      if r["significant"] else
+                      f'<span style="color:{C["neut"]};">○ {fl(r["factor"])}</span>', axis=1)
         spd["Spread (bps/mo)"] = (spd["spread"]*10000).round(1)
-        spd["t-stat"] = spd["t_stat"].round(2)
-        spd["Sig?"] = spd["significant"].apply(lambda x: "\u2705" if x else "")
         spd["Interpretation"] = spd["interpretation"]
-        st.dataframe(spd[["Factor","Spread (bps/mo)","t-stat","Sig?","Interpretation"]],
-                     width='stretch', hide_index=True)
+        rows_html = "".join(
+            f'<tr><td style="padding:6px 12px 6px 0;">{row["Factor"]}</td>'
+            f'<td style="text-align:right;padding:6px 12px;">{row["Spread (bps/mo)"]}</td>'
+            f'<td style="padding:6px 0;">{row["Interpretation"]}</td></tr>'
+            for _, row in spd.iterrows()
+        )
+        st.markdown(
+            f'<table style="width:100%;border-collapse:collapse;font-size:0.88rem;">'
+            f'<thead><tr>'
+            f'<th style="text-align:left;border-bottom:2px solid {C["grid"]};padding:6px 12px 6px 0;">Factor</th>'
+            f'<th style="text-align:right;border-bottom:2px solid {C["grid"]};padding:6px 12px;">Spread (bps/mo)</th>'
+            f'<th style="text-align:left;border-bottom:2px solid {C["grid"]};padding:6px 0;">Interpretation</th>'
+            f'</tr></thead><tbody>{rows_html}</tbody></table>',
+            unsafe_allow_html=True)
+        st.caption("● Significant at 95% confidence  ○ Not significant")
 
     with st.expander("\U0001f4ca Per-Factor Bar Charts (95% CI)"):
         fnames = rt["factor"].unique() if not rt.empty else []
@@ -2053,7 +2081,8 @@ if "\U0001f4c4" in page:
     # REGRESSIONS
     # ══════════════════════════════════════════════════════════════════════════
     st.markdown("---")
-    st.header("Factor Exposure (Regressions)")
+    st.header("Which Factors Move This Strategy Most?")
+    st.markdown("*A large bar means this factor has a big impact on the strategy's excess returns when it moves significantly.*")
 
     st.subheader("Single-Factor: Impact per 1-SD Factor Move")
     fig_sf = ch_sf(sf_tbl)
@@ -2061,22 +2090,42 @@ if "\U0001f4c4" in page:
 
     with st.expander("\U0001f4cb Single-Factor Table"):
         sfd = sf_tbl.copy()
-        sfd["Factor"] = sfd["factor"].apply(fl)
+        sfd["Factor"] = sfd.apply(
+            lambda r: f'<span style="color:{C["blue"]};font-weight:700;">● {fl(r["factor"])}</span>'
+                      if r["p"] < 0.05 else
+                      f'<span style="color:{C["neut"]};">○ {fl(r["factor"])}</span>', axis=1)
+        sfd["Sensitivity"] = sfd["beta"].map(lambda x: f"{x:.4f}" if pd.notna(x) else "")
+        sfd["Standardized Sensitivity"] = sfd["std_beta"].map(lambda x: f"{x:.4f}" if pd.notna(x) else "")
         sfd["Impact (bps)"] = (sfd["impact"]*10000).round(1)
-        sfd["Sig"] = sfd["p"].apply(lambda p: "\u2705" if p<0.05 else "")
-        for c in ["alpha","beta","std_beta","t","p","r2"]:
-            sfd[c] = sfd[c].map(lambda x: f"{x:.4f}" if pd.notna(x) else "")
-        st.dataframe(sfd[["Factor","beta","std_beta","Impact (bps)","t","p","r2","Sig"]],
-                     width='stretch', hide_index=True)
+        sfd["% Explained by Factors"] = sfd["r2"].map(lambda x: f"{x*100:.1f}%" if pd.notna(x) else "")
+        rows_html = "".join(
+            f'<tr><td style="padding:5px 12px 5px 0;">{row["Factor"]}</td>'
+            f'<td style="text-align:right;padding:5px 8px;">{row["Sensitivity"]}</td>'
+            f'<td style="text-align:right;padding:5px 8px;">{row["Standardized Sensitivity"]}</td>'
+            f'<td style="text-align:right;padding:5px 8px;">{row["Impact (bps)"]}</td>'
+            f'<td style="text-align:right;padding:5px 0;">{row["% Explained by Factors"]}</td></tr>'
+            for _, row in sfd.iterrows()
+        )
+        st.markdown(
+            f'<table style="width:100%;border-collapse:collapse;font-size:0.85rem;">'
+            f'<thead><tr>'
+            f'<th style="text-align:left;border-bottom:2px solid {C["grid"]};padding:5px 12px 5px 0;">Factor</th>'
+            f'<th style="text-align:right;border-bottom:2px solid {C["grid"]};padding:5px 8px;">Sensitivity</th>'
+            f'<th style="text-align:right;border-bottom:2px solid {C["grid"]};padding:5px 8px;">Standardized Sensitivity</th>'
+            f'<th style="text-align:right;border-bottom:2px solid {C["grid"]};padding:5px 8px;">Impact (bps)</th>'
+            f'<th style="text-align:right;border-bottom:2px solid {C["grid"]};padding:5px 0;">% Explained by Factors</th>'
+            f'</tr></thead><tbody>{rows_html}</tbody></table>',
+            unsafe_allow_html=True)
+        st.caption("● Significant at 95% confidence  ○ Not significant")
 
     if HAS_SM:
-        st.subheader("Multi-Factor Regression")
+        st.subheader("Multi-Factor Sensitivity")
         fig_mf = ch_mf(mf_tbl)
         if fig_mf: st.plotly_chart(fig_mf, width='stretch')
         if not mf_tbl.empty:
             mc1, mc2, mc3, mc4 = st.columns(4)
-            mc1.metric("R\u00b2", f"{mf_tbl.attrs.get('r2',0):.4f}")
-            mc2.metric("Adj. R\u00b2", f"{mf_tbl.attrs.get('adj_r2',0):.4f}")
+            mc1.metric("% Explained by Factors", f"{mf_tbl.attrs.get('r2',0)*100:.1f}%")
+            mc2.metric("Adj. % Explained", f"{mf_tbl.attrs.get('adj_r2',0)*100:.1f}%")
             mc3.metric("F-stat", f"{mf_tbl.attrs.get('f',0):.2f}")
             mc4.metric("Obs", mf_tbl.attrs.get("n", 0))
 
@@ -2084,8 +2133,8 @@ if "\U0001f4c4" in page:
     # STABILITY
     # ══════════════════════════════════════════════════════════════════════════
     st.markdown("---")
-    st.header("Exposure Stability")
-    tab_r, tab_s = st.tabs(["\U0001f4c8 Rolling 36-Mo Betas", "\U0001f4ca Subperiod Check"])
+    st.header("Are These Patterns Consistent Over Time?")
+    tab_r, tab_s = st.tabs(["\U0001f4c8 Factor Relationships Over Time", "\U0001f4ca Across Market Eras"])
     with tab_r:
         r36 = rolling_betas(dates, excess, factors, 36)
         fr36 = ch_rolling(r36, 36)
@@ -2096,6 +2145,7 @@ if "\U0001f4c4" in page:
         if not spb.empty:
             spb["Factor"] = spb["factor"].apply(fl)
             pivot = spb.pivot_table(index="Factor", columns="period", values="beta", aggfunc="first")
+            pivot.columns.name = "Sensitivity by Period"
             st.dataframe(pivot.style.format("{:+.3f}", na_rep="\u2014").background_gradient(
                 cmap="RdBu_r", vmin=-1, vmax=1, axis=None), width='stretch')
             st.caption("Sign consistency across periods = stable exposure. Sign flips = period-specific, less trustworthy.")
@@ -2178,14 +2228,18 @@ elif "\U0001f50d" in page:
 
     st.markdown(f"**{len(peer_df)} strategies** benchmarked to {sel_bm}")
 
+    st.markdown("---")
+    st.header("How Do These Managers' Factor Tilts Compare?")
+    st.markdown("*Select a factor to see where each manager is positioned.*")
+
     # ── View toggle ───────────────────────────────────────────────────────────
-    view_type = st.radio("Beta type", ["Multi-Factor Betas", "Standardized Betas (per 1-SD)"], horizontal=True)
+    view_type = st.radio("Sensitivity type", ["Multi-Factor Sensitivity", "Standardized Sensitivity"], horizontal=True)
 
     # ── Build display table ───────────────────────────────────────────────────
     fcols = [c for c in factor_df.columns if c != "date"]
     disp = peer_df[["strategy", "months", "r2"]].copy()
     disp["strategy"] = disp["strategy"].apply(_abbrev_strategy)
-    disp["R\u00b2"] = disp["r2"].map(lambda x: f"{x:.3f}" if pd.notna(x) else "")
+    disp["% Explained by Factors"] = disp["r2"].map(lambda x: f"{x:.3f}" if pd.notna(x) else "")
     disp["Unexplained"] = disp["r2"].map(lambda x: f"{(1-x)*100:.0f}%" if pd.notna(x) else "")
 
     if "Multi" in view_type:
@@ -2200,7 +2254,7 @@ elif "\U0001f50d" in page:
                 disp[fl(fc)] = peer_df[col].map(lambda x: f"{x:+.3f}" if pd.notna(x) else "")
 
     if "alpha_bps" in peer_df.columns:
-        disp["Alpha (bps)"] = peer_df["alpha_bps"].map(lambda x: f"{x:+.1f}" if pd.notna(x) else "")
+        disp["Monthly Value-Add (bps)"] = peer_df["alpha_bps"].map(lambda x: f"{x:+.1f}" if pd.notna(x) else "")
 
     if "tracking_error" in peer_df.columns:
         disp["Tracking Error"] = peer_df["tracking_error"].map(lambda x: f"{x:.2%}" if pd.notna(x) else "")
@@ -2209,7 +2263,7 @@ elif "\U0001f50d" in page:
     disp = disp.rename(columns={"strategy": "Strategy", "months": "Months"})
 
     # ── Sort control ──────────────────────────────────────────────────────────
-    sort_options = ["R\u00b2", "Tracking Error"] + [fl(fc) for fc in fcols if fl(fc) in disp.columns]
+    sort_options = ["% Explained by Factors", "Tracking Error"] + [fl(fc) for fc in fcols if fl(fc) in disp.columns]
     sort_col = st.selectbox("Sort by", sort_options)
     asc = st.checkbox("Ascending", value=False)
 
@@ -2228,21 +2282,21 @@ elif "\U0001f50d" in page:
         least_exp = peer_df.loc[peer_df["r2"].idxmin(), "strategy"] if len(peer_df) else ""
 
         ic1, ic2, ic3 = st.columns(3)
-        ic1.metric("Avg R\u00b2", f"{avg_r2:.1f}%")
+        ic1.metric("Avg % Explained by Factors", f"{avg_r2:.1f}%")
         ic2.metric("Most Factor-Driven", _abbrev_strategy(most_exp))
-        ic3.metric("Most Idiosyncratic", _abbrev_strategy(least_exp))
+        ic3.metric("Most Stock-Picker Driven", _abbrev_strategy(least_exp))
 
     st.markdown(f'<div class="ctx"><strong>Methodology:</strong> Multi-factor OLS regression of monthly excess returns on '
-                f'{len(fcols)} factors. Window: {window_label}. Betas shown are {"raw multi-factor coefficients" if "Multi" in view_type else "standardized (per 1-SD factor move)"}. '
-                f'R\u00b2 indicates proportion of excess return variation explained by factors.</div>',
+                f'{len(fcols)} factors. Window: {window_label}. Sensitivities shown are {"raw multi-factor coefficients" if "Multi" in view_type else "standardized (per 1-SD factor move)"}. '
+                f'% Explained by Factors indicates proportion of excess return variation explained by factors.</div>',
                 unsafe_allow_html=True)
 
     # ══════════════════════════════════════════════════════════════════════════
     # EXCESS RETURN CORRELATION
     # ══════════════════════════════════════════════════════════════════════════
     st.markdown("---")
-    st.header("Excess Return Correlations")
-    st.markdown("*How similarly do these strategies behave? Lower correlation = more diversification potential.*")
+    st.header("How Similarly Do These Managers Perform?")
+    st.markdown("*Lower correlation = more diversification potential when paired together.*")
 
     with st.spinner("Computing pairwise correlations..."):
         corr_matrix = compute_peer_corr(sdf_w, sel_bm, window_label)
@@ -2267,7 +2321,7 @@ elif "\U0001f50d" in page:
         # PAIRING RECOMMENDATIONS
         # ══════════════════════════════════════════════════════════════════════
         st.markdown("---")
-        st.header("Recommended Pairings")
+        st.header("Best Diversification Pairs")
         st.markdown("*Strategy pairs with low excess return correlation and complementary factor exposures — combining them may reduce factor-driven drawdowns.*")
 
         pairings = find_pairings(corr_matrix, peer_df, fcols)
@@ -2288,7 +2342,7 @@ elif "\U0001f50d" in page:
                     f'<div class="pair-names" style="display:flex;align-items:flex-start;">'
                     f'  <span class="pair-rank">{idx}</span>'
                     f'  <div>'
-                    f'    <div class="pair-label">Recommended Pair</div>'
+                    f'    <div class="pair-label">Best Diversification Pair</div>'
                     f'    <div class="pair-strat">{s1_short}</div>'
                     f'    <div class="pair-strat" style="color:{C["neut"]};">+ {s2_short}</div>'
                     f'  </div>'
@@ -2321,12 +2375,12 @@ elif "\U0001f50d" in page:
                             f'    <div class="tilt-strat">'
                             f'      <div class="tilt-strat-name">{s1_short}</div>'
                             f'      <div class="tilt-strat-label {s1_cls}">{s1_tilt}</div>'
-                            f'      <div class="tilt-strat-beta">Beta: {exp["s1_beta"]:+.3f}</div>'
+                            f'      <div class="tilt-strat-beta">Tilt: {exp["s1_beta"]:+.3f}</div>'
                             f'    </div>'
                             f'    <div class="tilt-strat">'
                             f'      <div class="tilt-strat-name">{s2_short}</div>'
                             f'      <div class="tilt-strat-label {s2_cls}">{s2_tilt}</div>'
-                            f'      <div class="tilt-strat-beta">Beta: {exp["s2_beta"]:+.3f}</div>'
+                            f'      <div class="tilt-strat-beta">Tilt: {exp["s2_beta"]:+.3f}</div>'
                             f'    </div>'
                             f'  </div>'
                             f'</div>'
@@ -2434,7 +2488,7 @@ elif "\U0001f50d" in page:
 
         def _fmt_s2(s, _rr=rec_rank):
             if s in _rr:
-                return f"\u2605 Recommended Pairing #{_rr[s]}: {_abbrev_strategy(s)}"
+                return f"\u2605 Best Pair #{_rr[s]}: {_abbrev_strategy(s)}"
             return _abbrev_strategy(s)
 
         with cb2:
@@ -2510,12 +2564,12 @@ elif "\U0001f50d" in page:
                         f'    <div class="tilt-strat">'
                         f'      <div class="tilt-strat-name">{cs1_short}</div>'
                         f'      <div class="tilt-strat-label {s1_cls}">{s1_tilt}</div>'
-                        f'      <div class="tilt-strat-beta">Beta: {exp["s1_beta"]:+.3f}</div>'
+                        f'      <div class="tilt-strat-beta">Tilt: {exp["s1_beta"]:+.3f}</div>'
                         f'    </div>'
                         f'    <div class="tilt-strat">'
                         f'      <div class="tilt-strat-name">{cs2_short}</div>'
                         f'      <div class="tilt-strat-label {s2_cls}">{s2_tilt}</div>'
-                        f'      <div class="tilt-strat-beta">Beta: {exp["s2_beta"]:+.3f}</div>'
+                        f'      <div class="tilt-strat-beta">Tilt: {exp["s2_beta"]:+.3f}</div>'
                         f'    </div>'
                         f'  </div>'
                         f'</div>'
