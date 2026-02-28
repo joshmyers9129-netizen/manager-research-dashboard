@@ -33,11 +33,11 @@ C = {  # Brand color palette
     "blue": "#2293BD", "blue_lt": "#4AB0D0",
     "cream": "#F0E6DD", "cream_lt": "#FBF7F3", "wh": "#FFFFFF",
     "txt": "#222222", "txt_lt": "#A09080",
-    "pos": "#2293BD", "neg": "#D9532B", "warn": "#FAA51A",
+    "pos": "#2E8B57", "pos_lt": "#7BC8A4", "neg": "#D9532B", "warn": "#FAA51A",
     "neut": "#7B7265", "grid": "#E8E0D8", "card": "#FBF7F3",
     "red": "#D9532B", "gold": "#FAA51A",
 }
-BC4 = [C["neg"], C["warn"], C["blue_lt"], C["blue"]]
+BC4 = [C["neg"], C["warn"], C["pos_lt"], C["pos"]]
 BC3 = [C["neg"], C["warn"], C["blue"]]
 FC = [C["blue"], C["red"], C["gold"], C["navy_dk"], C["cream"],
       C["blue_lt"], C["neut"], "#6B4C8A"]
@@ -599,9 +599,9 @@ def subperiod_betas(excess, fdf, dates):
 
 # ── Peer comparison compute ───────────────────────────────────────────────────
 
-def compute_peer_table(strategy_df, factor_df, benchmark, window_label, hac=None):
-    """Compute multi-factor betas + R-squared for all strategies sharing a benchmark."""
-    peers = strategy_df[strategy_df["benchmark"]==benchmark]["strategy"].unique()
+def compute_peer_table(strategy_df, factor_df, group_val, window_label, hac=None, group_col="benchmark"):
+    """Compute multi-factor betas + R-squared for all strategies sharing a peer group."""
+    peers = strategy_df[strategy_df[group_col]==group_val]["strategy"].unique() if group_col in strategy_df.columns else strategy_df["strategy"].unique()
     rows = []
     for strat in peers:
         sd = strategy_df[strategy_df["strategy"]==strat][["date","excess_return"]].dropna()
@@ -642,9 +642,9 @@ def compute_peer_table(strategy_df, factor_df, benchmark, window_label, hac=None
     return pd.DataFrame(rows)
 
 
-def compute_peer_corr(strategy_df, benchmark, window_label):
+def compute_peer_corr(strategy_df, group_val, window_label, group_col="benchmark"):
     """Build a correlation matrix of monthly excess returns across peer strategies."""
-    peers = strategy_df[strategy_df["benchmark"]==benchmark]["strategy"].unique()
+    peers = strategy_df[strategy_df[group_col]==group_val]["strategy"].unique() if group_col in strategy_df.columns else strategy_df["strategy"].unique()
     series = {}
     for strat in peers:
         sd = strategy_df[strategy_df["strategy"]==strat][["date","excess_return"]].dropna()
@@ -961,8 +961,9 @@ def ch_heatmap(rt, metric="avg_excess"):
     pivot.index=[fl(f) for f in pivot.index]
     fmt=(lambda x: f"{x:.1f}%") if metric=="hit_rate" else (lambda x: f"{x*10000:.0f}")
     text=np.vectorize(fmt)(pivot.values)
+    zmid = 50 if metric == "hit_rate" else 0
     fig=go.Figure(go.Heatmap(z=pivot.values, x=[_bucket_label(str(c)) for c in pivot.columns], y=list(pivot.index),
-        colorscale=[[0,C["neg"]],[0.5,C["wh"]],[1,C["blue"]]], zmid=0,
+        colorscale=[[0,C["neg"]],[0.5,C["wh"]],[1,C["pos"]]], zmid=zmid,
         text=text, texttemplate="%{text}", textfont=dict(size=12, color=C["txt"]),
         colorbar=dict(title="Hit %" if metric=="hit_rate" else "Bps/Mo"),
         hovertemplate="Factor: %{y}<br>Regime: %{x}<br>Value: %{z:.4f}<extra></extra>"))
@@ -991,7 +992,7 @@ def ch_bar(rt, fname):
 def ch_sf(sf):
     if not HAS_PLOTLY or sf.empty: return None
     df=sf.sort_values("impact", ascending=True)
-    colors=[C["blue"] if b>0 else C["neg"] for b in df["impact"]]
+    colors=[C["pos"] if b>0 else C["neg"] for b in df["impact"]]
     fig=go.Figure(go.Bar(y=[fl(f) for f in df["factor"]], x=df["impact"]*10000, orientation="h",
         marker_color=colors,
         text=[f"{v*10000:+.0f}{'*' if p<.05 else ''}" for v,p in zip(df["impact"],df["p"])],
@@ -1025,12 +1026,67 @@ def ch_rolling(rdf, window=36):
     fig.update_layout(height=420, legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="right",x=1))
     return fig
 
+def ch_rolling_premiums(fdf, window=12):
+    """Rolling cumulative factor returns (bps, 12-month rolling sum)."""
+    if not HAS_PLOTLY or fdf.empty: return None
+    fc = [c for c in fdf.columns if c != "date" and c.lower() != "cash"]
+    if not fc: return None
+    df = fdf[["date"] + fc].copy().sort_values("date").reset_index(drop=True)
+    fig = go.Figure()
+    for i, f in enumerate(fc):
+        roll = df[f].rolling(window).sum()
+        fig.add_trace(go.Scatter(x=df["date"], y=roll * 10000, name=fl(f), mode="lines",
+                                  line=dict(color=FC[i % len(FC)], width=2)))
+    fig.add_hline(y=0, line_dash="dash", line_color="#D5CFC8")
+    _lay(fig, f"Factor Premium Trends ({window}-Month Rolling Cumulative, bps)")
+    fig.update_layout(height=420, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    return fig
+
+
+def ch_factor_bars(peer_df, factor, view_type="mf"):
+    """Horizontal bar chart: all managers sorted by factor tilt magnitude."""
+    if not HAS_PLOTLY or peer_df.empty: return None
+    col = f"{view_type}_{factor}"
+    if col not in peer_df.columns: return None
+    df = peer_df[["strategy", col]].dropna(subset=[col]).copy()
+    df["label"] = df["strategy"].apply(_display_name)
+    df = df.sort_values(col)
+    colors = [C["pos"] if v >= 0 else C["neg"] for v in df[col]]
+    fig = go.Figure(go.Bar(
+        x=df[col], y=df["label"], orientation="h",
+        marker_color=colors,
+        text=[f"{v:+.3f}" for v in df[col]], textposition="outside"))
+    _lay(fig, f"Factor Tilt Comparison: {fl(factor)}")
+    fig.update_layout(height=max(300, len(df) * 38 + 100))
+    return fig
+
+
+def ch_factor_scatter(peer_df, f1, f2, view_type="mf"):
+    """Scatter plot: managers as labeled dots on two-factor axes."""
+    if not HAS_PLOTLY or peer_df.empty: return None
+    c1, c2 = f"{view_type}_{f1}", f"{view_type}_{f2}"
+    if c1 not in peer_df.columns or c2 not in peer_df.columns: return None
+    df = peer_df[["strategy", c1, c2]].dropna().copy()
+    df["label"] = df["strategy"].apply(_display_name)
+    fig = go.Figure()
+    fig.add_vline(x=0, line_dash="dash", line_color="#D5CFC8")
+    fig.add_hline(y=0, line_dash="dash", line_color="#D5CFC8")
+    fig.add_trace(go.Scatter(
+        x=df[c1], y=df[c2], mode="markers+text",
+        text=df["label"], textposition="top center",
+        marker=dict(size=10, color=C["blue"], opacity=0.8),
+        hovertemplate="%{text}<br>" + fl(f1) + ": %{x:.3f}<br>" + fl(f2) + ": %{y:.3f}<extra></extra>"))
+    _lay(fig, f"Factor Tilts: {fl(f1)} vs {fl(f2)}")
+    fig.update_layout(height=480, xaxis_title=fl(f1), yaxis_title=fl(f2))
+    return fig
+
+
 def ch_cum(dates, excess, name):
     if not HAS_PLOTLY: return None
     tmp=pd.DataFrame({"d":dates.values,"e":excess.values}).dropna().sort_values("d")
     tmp["c"]=(1+tmp["e"]).cumprod()-1
     fig=go.Figure(go.Scatter(x=tmp["d"],y=tmp["c"],mode="lines",fill="tozeroy",
-        line=dict(color=C["blue"],width=2), fillcolor="rgba(34,147,189,0.08)",
+        line=dict(color=C["pos"],width=2), fillcolor="rgba(46,139,87,0.08)",
         hovertemplate="Date: %{x}<br>Cumulative: %{y:.3%}<extra></extra>"))
     fig.add_hline(y=0, line_dash="dash", line_color="#D5CFC8")
     _lay(fig, f"Cumulative Excess Return: {name}")
@@ -1050,7 +1106,7 @@ def ch_corr(fdf):
 def ch_peer_corr(corr_df):
     """Heatmap of pairwise excess return correlations across peer strategies."""
     if not HAS_PLOTLY or corr_df.empty: return None
-    labels = [_abbrev_strategy(s) for s in corr_df.columns]
+    labels = [_display_name(s) for s in corr_df.columns]
     fig = go.Figure(go.Heatmap(
         z=corr_df.values, x=labels, y=labels,
         colorscale=[[0, C["neg"]], [0.5, C["wh"]], [1, C["blue"]]],
@@ -1071,7 +1127,7 @@ def ch_peer_corr(corr_df):
 def ch_notable_q(nq):
     if not HAS_PLOTLY or nq.empty: return None
     df=nq.sort_values("start")
-    colors=[C["blue"] if l=="Best" else C["neg"] for l in df["label"]]
+    colors=[C["pos"] if l=="Best" else C["neg"] for l in df["label"]]
     fig=go.Figure(go.Bar(x=df["period"],y=df["excess_return"],marker_color=colors,
         text=[f"{v:+.1%}" for v in df["excess_return"]], textposition="outside",
         hovertemplate="%{x}<br>Excess: %{y:.2%}<br>%{customdata}<extra></extra>",
@@ -1083,7 +1139,7 @@ def ch_notable_q(nq):
 def ch_notable_y(ny):
     if not HAS_PLOTLY or ny.empty: return None
     df=ny.sort_values("period")
-    colors=[C["blue"] if l=="Best" else C["neg"] for l in df["label"]]
+    colors=[C["pos"] if l=="Best" else C["neg"] for l in df["label"]]
     fig=go.Figure(go.Bar(x=df["period"],y=df["excess_return"],marker_color=colors,
         text=[f"{v:+.1%}" for v in df["excess_return"]], textposition="outside",
         hovertemplate="%{x}<br>%{y:.2%}<br>%{customdata}<extra></extra>",
@@ -1171,8 +1227,8 @@ div[data-testid="stExpander"] {{ border: 1px solid {C["grid"]}; border-radius: 8
 .sum-kpi:hover {{ box-shadow: 0 4px 16px rgba(0,0,0,0.06); }}
 .sum-kpi::before {{ content: ''; position: absolute; top: 0; left: 0; right: 0;
                     height: 3px; border-radius: 8px 8px 0 0; }}
-.sum-kpi.kpi-teal::before {{ background: {C["blue"]}; }}
-.sum-kpi.kpi-pos::before {{ background: {C["blue"]}; }}
+.sum-kpi.kpi-teal::before {{ background: {C["pos"]}; }}
+.sum-kpi.kpi-pos::before {{ background: {C["pos"]}; }}
 .sum-kpi.kpi-neg::before {{ background: {C["neg"]}; }}
 .sum-kpi.kpi-neut::before {{ background: {C["neut"]}; }}
 .sum-kpi .kpi-label {{ font-size: 0.72rem; font-weight: 600; text-transform: uppercase;
@@ -1197,21 +1253,21 @@ div[data-testid="stExpander"] {{ border: 1px solid {C["grid"]}; border-radius: 8
                          font-family: Georgia, serif; }}
 .sum-factor .fac-badge {{ font-size: 0.68rem; font-weight: 600; padding: 3px 10px;
                           border-radius: 20px; text-transform: uppercase; letter-spacing: 0.04em; }}
-.fac-badge.sig {{ background: rgba(34,147,189,0.10); color: {C["blue"]}; }}
+.fac-badge.sig {{ background: rgba(46,139,87,0.10); color: {C["pos"]}; }}
 .fac-badge.nsig {{ background: {C["card"]}; color: {C["neut"]}; }}
 .sum-factor .fac-direction {{ font-size: 0.85rem; color: {C["txt"]}; line-height: 1.4;
                               font-weight: 500; margin-bottom: 12px; }}
 .sum-factor .fac-regimes {{ display: flex; gap: 10px; margin-bottom: 8px; }}
 .sum-factor .fac-regime {{ flex: 1; border-radius: 6px; padding: 10px 12px; text-align: center; }}
-.fac-regime.regime-top {{ background: rgba(34,147,189,0.07); }}
+.fac-regime.regime-top {{ background: rgba(46,139,87,0.07); }}
 .fac-regime.regime-bot {{ background: rgba(217,83,43,0.06); }}
 .fac-regime .regime-label {{ font-size: 0.65rem; font-weight: 600; text-transform: uppercase;
                              letter-spacing: 0.06em; margin-bottom: 4px; }}
-.regime-top .regime-label {{ color: {C["blue"]}; }}
+.regime-top .regime-label {{ color: {C["pos"]}; }}
 .regime-bot .regime-label {{ color: {C["neg"]}; }}
 .fac-regime .regime-val {{ font-size: 1.2rem; font-weight: 700; line-height: 1.2;
                            font-family: Georgia, serif; }}
-.regime-top .regime-val {{ color: {C["blue"]}; }}
+.regime-top .regime-val {{ color: {C["pos"]}; }}
 .regime-bot .regime-val {{ color: {C["neg"]}; }}
 .fac-regime .regime-sub {{ font-size: 0.7rem; color: {C["neut"]}; margin-top: 2px; }}
 .sum-factor .fac-meta {{ font-size: 0.72rem; color: {C["neut"]}; display: flex;
@@ -1235,13 +1291,13 @@ div[data-testid="stExpander"] {{ border: 1px solid {C["grid"]}; border-radius: 8
               background: {C["wh"]}; }}
 .sum-qcard .qc-label {{ font-size: 0.68rem; font-weight: 600; text-transform: uppercase;
                          letter-spacing: 0.06em; margin-bottom: 6px; }}
-.qc-best .qc-label {{ color: {C["blue"]}; }}
+.qc-best .qc-label {{ color: {C["pos"]}; }}
 .qc-worst .qc-label {{ color: {C["neg"]}; }}
 .sum-qcard .qc-period {{ font-size: 0.85rem; font-weight: 600; color: {C["navy"]};
                           font-family: Georgia, serif; }}
 .sum-qcard .qc-return {{ font-size: 1.3rem; font-weight: 700; margin: 4px 0;
                           font-family: Georgia, serif; }}
-.qc-best .qc-return {{ color: {C["blue"]}; }}
+.qc-best .qc-return {{ color: {C["pos"]}; }}
 .qc-worst .qc-return {{ color: {C["neg"]}; }}
 .sum-qcard .qc-drivers {{ font-size: 0.78rem; color: {C["neut"]}; line-height: 1.4; }}
 .drivers-tbl {{ border-collapse: collapse; font-size: 0.78rem; width: 100%; margin-top: 4px; }}
@@ -1306,7 +1362,7 @@ div[data-testid="stExpander"] {{ border: 1px solid {C["grid"]}; border-radius: 8
 .tilt-strat-name {{ font-size: 0.68rem; color: {C["neut"]}; margin-bottom: 2px; }}
 .tilt-strat-label {{ font-size: 0.82rem; font-weight: 600; }}
 .tilt-strat-beta {{ font-size: 0.72rem; color: {C["neut"]}; margin-top: 1px; }}
-.tilt-pos {{ color: {C["blue"]}; }}
+.tilt-pos {{ color: {C["pos"]}; }}
 .tilt-neg {{ color: {C["neg"]}; }}
 
 /* ── Blended performance stats ──────────────────────────────────────── */
@@ -1324,7 +1380,7 @@ div[data-testid="stExpander"] {{ border: 1px solid {C["grid"]}; border-radius: 8
               text-align: right; }}
 .blend-val.blend-highlight {{ background: rgba(34,147,189,0.06); font-weight: 600;
                               color: {C["navy"]}; }}
-.blend-best {{ color: {C["blue"]}; font-weight: 600; }}
+.blend-best {{ color: {C["pos"]}; font-weight: 600; }}
 .blend-worst {{ color: {C["neg"]}; font-weight: 600; }}
 </style>""", unsafe_allow_html=True)
 
@@ -1669,104 +1725,58 @@ if "\U0001f4c4" in page:
         fig_hm = ch_heatmap(rt, hm_metric)
         if fig_hm: st.plotly_chart(fig_hm, width='stretch')
 
-    if not sp.empty:
-        st.subheader("Spread Summary (In Favor minus Out of Favor)")
-        spd = sp.copy()
-        spd["Factor"] = spd.apply(
-            lambda r: f'<span style="color:{C["blue"]};font-weight:700;">● {fl(r["factor"])}</span>'
-                      if r["significant"] else
-                      f'<span style="color:{C["neut"]};">○ {fl(r["factor"])}</span>', axis=1)
-        spd["Spread (bps/mo)"] = (spd["spread"]*10000).round(1)
-        spd["Interpretation"] = spd["interpretation"]
-        rows_html = "".join(
-            f'<tr><td style="padding:6px 12px 6px 0;">{row["Factor"]}</td>'
-            f'<td style="text-align:right;padding:6px 12px;">{row["Spread (bps/mo)"]}</td>'
-            f'<td style="padding:6px 0;">{row["Interpretation"]}</td></tr>'
-            for _, row in spd.iterrows()
-        )
-        st.markdown(
-            f'<table style="width:100%;border-collapse:collapse;font-size:0.88rem;">'
-            f'<thead><tr>'
-            f'<th style="text-align:left;border-bottom:2px solid {C["grid"]};padding:6px 12px 6px 0;">Factor</th>'
-            f'<th style="text-align:right;border-bottom:2px solid {C["grid"]};padding:6px 12px;">Spread (bps/mo)</th>'
-            f'<th style="text-align:left;border-bottom:2px solid {C["grid"]};padding:6px 0;">Interpretation</th>'
-            f'</tr></thead><tbody>{rows_html}</tbody></table>',
-            unsafe_allow_html=True)
-        st.caption("● Significant at 95% confidence  ○ Not significant")
-
-    with st.expander("\U0001f4ca Per-Factor Bar Charts (95% CI)"):
-        fnames = rt["factor"].unique() if not rt.empty else []
-        cols = st.columns(min(3, max(1, len(fnames))))
-        for i, fn in enumerate(fnames):
-            with cols[i % len(cols)]:
-                fb = ch_bar(rt, fn)
-                if fb: st.plotly_chart(fb, width='stretch', key=f"bar_{fn}")
+    # ── Factor Deep Dive (per-factor bar chart with insight) ─────────────────
+    if not rt.empty:
+        factor_opts = [f for f in rt["factor"].unique() if f in factors.columns]
+        # Default to most significant factor
+        if not sf_tbl.empty and factor_opts:
+            sig_sorted = sf_tbl[sf_tbl["factor"].isin(factor_opts)].sort_values(
+                "p").sort_values("impact", key=abs, ascending=False)
+            sig_factors = sig_sorted[sig_sorted["p"] < 0.05]
+            _default_f = sig_factors.iloc[0]["factor"] if not sig_factors.empty else sig_sorted.iloc[0]["factor"] if not sig_sorted.empty else factor_opts[0]
+        else:
+            _default_f = factor_opts[0] if factor_opts else None
+        if _default_f and factor_opts:
+            _factor_display_opts = [fl(f) for f in factor_opts]
+            _default_idx = factor_opts.index(_default_f) if _default_f in factor_opts else 0
+            sel_dive_display = st.selectbox("Factor Deep Dive", _factor_display_opts, index=_default_idx, key="factor_deep_dive")
+            sel_dive_raw = factor_opts[_factor_display_opts.index(sel_dive_display)]
+            fig_dive = ch_bar(rt, sel_dive_raw)
+            if fig_dive: st.plotly_chart(fig_dive, width='stretch')
+            # Insight text
+            sub_dive = rt[rt["factor"] == sel_dive_raw]
+            if not sub_dive.empty:
+                _dive_labels = sorted(sub_dive["bucket"].unique())
+                _top_row = sub_dive[sub_dive["bucket"] == _dive_labels[-1]]
+                _bot_row = sub_dive[sub_dive["bucket"] == _dive_labels[0]]
+                if not _top_row.empty and not _bot_row.empty:
+                    _top_bps = _top_row.iloc[0]["avg_excess"] * 10000
+                    _bot_bps = _bot_row.iloc[0]["avg_excess"] * 10000
+                    st.caption(f"*This strategy averages **{_top_bps:+.0f} bps/mo** when {fl(sel_dive_raw)} is in favor vs **{_bot_bps:+.0f} bps/mo** when out of favor.*")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # REGRESSIONS
+    # FACTOR SENSITIVITY
     # ══════════════════════════════════════════════════════════════════════════
     st.markdown("---")
     st.header("Which Factors Move This Strategy Most?")
     st.markdown("*A large bar means this factor has a big impact on the strategy's excess returns when it moves significantly.*")
 
-    st.subheader("Single-Factor: Impact per 1-SD Factor Move")
     fig_sf = ch_sf(sf_tbl)
     if fig_sf: st.plotly_chart(fig_sf, width='stretch')
-
-    with st.expander("\U0001f4cb Single-Factor Table"):
-        sfd = sf_tbl.copy()
-        sfd["Factor"] = sfd.apply(
-            lambda r: f'<span style="color:{C["blue"]};font-weight:700;">● {fl(r["factor"])}</span>'
-                      if r["p"] < 0.05 else
-                      f'<span style="color:{C["neut"]};">○ {fl(r["factor"])}</span>', axis=1)
-        sfd["Sensitivity"] = sfd["beta"].map(lambda x: f"{x:.4f}" if pd.notna(x) else "")
-        sfd["Standardized Sensitivity"] = sfd["std_beta"].map(lambda x: f"{x:.4f}" if pd.notna(x) else "")
-        sfd["Impact (bps)"] = (sfd["impact"]*10000).round(1)
-        sfd["% Explained by Factors"] = sfd["r2"].map(lambda x: f"{x*100:.1f}%" if pd.notna(x) else "")
-        rows_html = "".join(
-            f'<tr><td style="padding:5px 12px 5px 0;">{row["Factor"]}</td>'
-            f'<td style="text-align:right;padding:5px 8px;">{row["Sensitivity"]}</td>'
-            f'<td style="text-align:right;padding:5px 8px;">{row["Standardized Sensitivity"]}</td>'
-            f'<td style="text-align:right;padding:5px 8px;">{row["Impact (bps)"]}</td>'
-            f'<td style="text-align:right;padding:5px 0;">{row["% Explained by Factors"]}</td></tr>'
-            for _, row in sfd.iterrows()
-        )
-        st.markdown(
-            f'<table style="width:100%;border-collapse:collapse;font-size:0.85rem;">'
-            f'<thead><tr>'
-            f'<th style="text-align:left;border-bottom:2px solid {C["grid"]};padding:5px 12px 5px 0;">Factor</th>'
-            f'<th style="text-align:right;border-bottom:2px solid {C["grid"]};padding:5px 8px;">Sensitivity</th>'
-            f'<th style="text-align:right;border-bottom:2px solid {C["grid"]};padding:5px 8px;">Standardized Sensitivity</th>'
-            f'<th style="text-align:right;border-bottom:2px solid {C["grid"]};padding:5px 8px;">Impact (bps)</th>'
-            f'<th style="text-align:right;border-bottom:2px solid {C["grid"]};padding:5px 0;">% Explained by Factors</th>'
-            f'</tr></thead><tbody>{rows_html}</tbody></table>',
-            unsafe_allow_html=True)
-        st.caption("● Significant at 95% confidence  ○ Not significant")
-
-    if HAS_SM:
-        st.subheader("Multi-Factor Sensitivity")
-        fig_mf = ch_mf(mf_tbl)
-        if fig_mf: st.plotly_chart(fig_mf, width='stretch')
-        if not mf_tbl.empty:
-            mc1, mc2, mc3, mc4 = st.columns(4)
-            mc1.metric("% Explained by Factors", f"{mf_tbl.attrs.get('r2',0)*100:.1f}%")
-            mc2.metric("Adj. % Explained", f"{mf_tbl.attrs.get('adj_r2',0)*100:.1f}%")
-            mc3.metric("F-stat", f"{mf_tbl.attrs.get('f',0):.2f}")
-            mc4.metric("Obs", mf_tbl.attrs.get("n", 0))
 
     # ══════════════════════════════════════════════════════════════════════════
     # STABILITY
     # ══════════════════════════════════════════════════════════════════════════
     st.markdown("---")
     st.header("Are These Patterns Consistent Over Time?")
-    tab_r, tab_s = st.tabs(["\U0001f4c8 Factor Relationships Over Time", "\U0001f4ca Across Market Eras"])
+    tab_r, tab_s, tab_p = st.tabs(["\U0001f4c8 Factor Relationships Over Time", "\U0001f4ca Across Market Eras", "\U0001f4c9 Factor Premium Trends"])
     with tab_r:
         _factors_no_cash = factors[[c for c in factors.columns if c.lower() != "cash"]]
         r36 = rolling_betas(dates, excess, _factors_no_cash, 36)
         fr36 = ch_rolling(r36, 36)
         if fr36: st.plotly_chart(fr36, width='stretch')
     with tab_s:
-        st.markdown("*Do betas hold across regimes, or are they period-specific?*")
+        st.markdown("*Do factor sensitivities hold across different market eras, or are they period-specific?*")
         _factors_no_cash = factors[[c for c in factors.columns if c.lower() != "cash"]]
         spb = subperiod_betas(excess, _factors_no_cash, dates)
         if not spb.empty:
@@ -1774,143 +1784,71 @@ if "\U0001f4c4" in page:
             pivot = spb.pivot_table(index="Factor", columns="period", values="beta", aggfunc="first")
             pivot.columns.name = "Sensitivity by Period"
             st.dataframe(pivot.style.format("{:+.3f}", na_rep="\u2014").background_gradient(
-                cmap="RdBu_r", vmin=-1, vmax=1, axis=None), width='stretch')
-            st.caption("Sign consistency across periods = stable exposure. Sign flips = period-specific, less trustworthy.")
+                cmap="RdYlGn", vmin=-1, vmax=1, axis=None), width='stretch')
+            st.caption("Consistent sign across periods = stable exposure. Sign flips = period-specific, less trustworthy.")
+    with tab_p:
+        st.markdown("*Rolling 12-month cumulative factor returns — shows which environments have been rewarding.*")
+        fig_prm = ch_rolling_premiums(fdf_w, window=12)
+        if fig_prm: st.plotly_chart(fig_prm, width='stretch')
 
     with st.expander("\U0001f517 Factor Correlation Matrix"):
         fc_fig = ch_corr(factors)
         if fc_fig: st.plotly_chart(fc_fig, width='stretch')
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # EXPORT
-    # ══════════════════════════════════════════════════════════════════════════
-    st.markdown("---")
-    st.header("Export")
-    ex1, = st.columns(1)
-    with ex1:
-        if st.button("\U0001f4c4 Generate Excel", use_container_width=True):
-            buf = io.BytesIO()
-            with pd.ExcelWriter(buf, engine="openpyxl") as w:
-                pd.DataFrame({"Summary": _summary_to_bullets(summary)}).to_excel(w, sheet_name="Summary", index=False)
-                if not rt.empty:
-                    rto = rt.copy(); rto["factor"] = rto["factor"].apply(fl)
-                    rto.to_excel(w, sheet_name="Regime Analysis", index=False)
-                    spo = sp.copy(); spo["factor"] = spo["factor"].apply(fl)
-                    spo.to_excel(w, sheet_name="Spread Summary", index=False)
-                sfo = sf_tbl.copy(); sfo["factor"] = sfo["factor"].apply(fl)
-                sfo.to_excel(w, sheet_name="Single Factor", index=False)
-                if not mf_tbl.empty: mf_tbl.to_excel(w, sheet_name="Multi Factor", index=False)
-                if not nq.empty: nq.to_excel(w, sheet_name="Notable Quarters", index=False)
-                if not ny.empty: ny.to_excel(w, sheet_name="Notable Years", index=False)
-            buf.seek(0)
-            cn = sel_strat.replace("|","-").replace("/","-").strip()
-            st.download_button("\u2b07\ufe0f Download Excel", buf, f"factor_{cn}.xlsx",
-                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                               use_container_width=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: PEER COMPARISON
 # ══════════════════════════════════════════════════════════════════════════════
 elif "\U0001f50d" in page:
-    st.header("Benchmark Peer Comparison")
-    st.markdown("*Compare factor exposures across all strategies sharing the same benchmark.*")
 
-    # Benchmark selector
-    bm_counts = sdf_w.groupby("benchmark")["strategy"].nunique().sort_values(ascending=False)
-    bm_options = [f"{bm} ({n} strategies)" for bm, n in bm_counts.items() if n >= 2]
-    if not bm_options:
-        st.warning("No benchmarks with 2+ strategies in current window."); st.stop()
-    sel_bm_display = st.selectbox("Select benchmark", bm_options)
-    sel_bm = sel_bm_display.split(" (")[0]
+    # ── Universe-based peer group selector ────────────────────────────────────
+    if "universe" in sdf_w.columns and sdf_w["universe"].notna().any() and sdf_w["universe"].str.strip().ne("").any():
+        _pg_col = "universe"
+        _pg_counts = sdf_w.groupby("universe")["strategy"].nunique().sort_values(ascending=False)
+    else:
+        _pg_col = "benchmark"
+        _pg_counts = sdf_w.groupby("benchmark")["strategy"].nunique().sort_values(ascending=False)
+
+    _pg_options = [f"{pg} ({n} strategies)" for pg, n in _pg_counts.items() if n >= 2]
+    if not _pg_options:
+        st.warning("No peer groups with 2+ strategies in current window."); st.stop()
+    sel_pg_display = st.selectbox("Peer Group", _pg_options)
+    sel_pg = sel_pg_display.split(" (")[0]
+
+    fcols = [c for c in factor_df.columns if c != "date"]
 
     with st.spinner("Computing peer factor exposures..."):
-        peer_df = compute_peer_table(sdf_w, fdf_w, sel_bm, window_label)
+        peer_df = compute_peer_table(sdf_w, fdf_w, sel_pg, window_label, group_col=_pg_col)
 
     if peer_df.empty:
         st.warning("Not enough overlapping data for peer comparison."); st.stop()
 
-    st.markdown(f"**{len(peer_df)} strategies** benchmarked to {sel_bm}")
+    # ── Compact info bar ──────────────────────────────────────────────────────
+    if "r2" in peer_df.columns and len(peer_df):
+        _avg_r2 = peer_df["r2"].mean() * 100
+        _most_exp = _display_name(peer_df.loc[peer_df["r2"].idxmax(), "strategy"])
+        _least_exp = _display_name(peer_df.loc[peer_df["r2"].idxmin(), "strategy"])
+        st.markdown(
+            f'<div class="ctx">{len(peer_df)} strategies &nbsp;·&nbsp; {_avg_r2:.0f}% of excess returns explained by factors on avg'
+            f' &nbsp;·&nbsp; Most factor-driven: <strong>{_most_exp}</strong>'
+            f' &nbsp;·&nbsp; Most stock-picker driven: <strong>{_least_exp}</strong></div>',
+            unsafe_allow_html=True)
 
-    st.markdown("---")
-    st.header("How Do These Managers' Factor Tilts Compare?")
-    st.markdown("*Select a factor to see where each manager is positioned.*")
-
-    # ── View toggle ───────────────────────────────────────────────────────────
-    view_type = st.radio("Sensitivity type", ["Multi-Factor Sensitivity", "Standardized Sensitivity"], horizontal=True)
-
-    # ── Build display table ───────────────────────────────────────────────────
-    fcols = [c for c in factor_df.columns if c != "date"]
-    disp = peer_df[["strategy", "months", "r2"]].copy()
-    disp["strategy"] = disp["strategy"].apply(_abbrev_strategy)
-    disp["% Explained by Factors"] = disp["r2"].map(lambda x: f"{x:.3f}" if pd.notna(x) else "")
-    disp["Unexplained"] = disp["r2"].map(lambda x: f"{(1-x)*100:.0f}%" if pd.notna(x) else "")
-
-    if "Multi" in view_type:
-        for fc in fcols:
-            col = f"mf_{fc}"
-            if col in peer_df.columns:
-                disp[fl(fc)] = peer_df[col].map(lambda x: f"{x:+.3f}" if pd.notna(x) else "")
-    else:
-        for fc in fcols:
-            col = f"std_{fc}"
-            if col in peer_df.columns:
-                disp[fl(fc)] = peer_df[col].map(lambda x: f"{x:+.3f}" if pd.notna(x) else "")
-
-    if "alpha_bps" in peer_df.columns:
-        disp["Monthly Value-Add (bps)"] = peer_df["alpha_bps"].map(lambda x: f"{x:+.1f}" if pd.notna(x) else "")
-
-    if "tracking_error" in peer_df.columns:
-        disp["Tracking Error"] = peer_df["tracking_error"].map(lambda x: f"{x:.2%}" if pd.notna(x) else "")
-
-    disp = disp.drop(columns=["r2"])
-    disp = disp.rename(columns={"strategy": "Strategy", "months": "Months"})
-
-    # ── Sort control ──────────────────────────────────────────────────────────
-    sort_options = ["% Explained by Factors", "Tracking Error"] + [fl(fc) for fc in fcols if fl(fc) in disp.columns]
-    sort_col = st.selectbox("Sort by", sort_options)
-    asc = st.checkbox("Ascending", value=False)
-
-    # Convert sort column back to numeric for sorting
-    if sort_col in disp.columns:
-        disp["_sort"] = pd.to_numeric(disp[sort_col].str.replace("%", ""), errors="coerce")
-        disp = disp.sort_values("_sort", ascending=asc).drop(columns="_sort")
-
-    st.dataframe(disp, width='stretch', hide_index=True, height=min(800, 40 + len(disp) * 35))
-
-    # ── Summary insights ──────────────────────────────────────────────────────
-    if not peer_df.empty and "r2" in peer_df.columns:
-        st.subheader("Peer Insights")
-        avg_r2 = peer_df["r2"].mean() * 100
-        most_exp = peer_df.loc[peer_df["r2"].idxmax(), "strategy"] if len(peer_df) else ""
-        least_exp = peer_df.loc[peer_df["r2"].idxmin(), "strategy"] if len(peer_df) else ""
-
-        ic1, ic2, ic3 = st.columns(3)
-        ic1.metric("Avg % Explained by Factors", f"{avg_r2:.1f}%")
-        ic2.metric("Most Factor-Driven", _abbrev_strategy(most_exp))
-        ic3.metric("Most Stock-Picker Driven", _abbrev_strategy(least_exp))
-
-    st.markdown(f'<div class="ctx"><strong>Methodology:</strong> Multi-factor OLS regression of monthly excess returns on '
-                f'{len(fcols)} factors. Window: {window_label}. Sensitivities shown are {"raw multi-factor coefficients" if "Multi" in view_type else "standardized (per 1-SD factor move)"}. '
-                f'% Explained by Factors indicates proportion of excess return variation explained by factors.</div>',
-                unsafe_allow_html=True)
+    with st.spinner("Computing pairwise correlations..."):
+        corr_matrix = compute_peer_corr(sdf_w, sel_pg, window_label, group_col=_pg_col)
 
     # ══════════════════════════════════════════════════════════════════════════
-    # EXCESS RETURN CORRELATION
+    # CORRELATION HEATMAP
     # ══════════════════════════════════════════════════════════════════════════
     st.markdown("---")
     st.header("How Similarly Do These Managers Perform?")
     st.markdown("*Lower correlation = more diversification potential when paired together.*")
-
-    with st.spinner("Computing pairwise correlations..."):
-        corr_matrix = compute_peer_corr(sdf_w, sel_bm, window_label)
 
     if not corr_matrix.empty:
         fig_pcorr = ch_peer_corr(corr_matrix)
         if fig_pcorr:
             st.plotly_chart(fig_pcorr, width='stretch')
 
-        # Correlation summary stats
         mask = np.triu(np.ones(corr_matrix.shape, dtype=bool), k=1)
         upper_vals = corr_matrix.values[mask]
         upper_vals = upper_vals[~np.isnan(upper_vals)]
@@ -1920,158 +1858,38 @@ elif "\U0001f50d" in page:
             cs2.metric("Median", f"{np.median(upper_vals):.2f}")
             cs3.metric("Min (Most Diversifying)", f"{np.min(upper_vals):.2f}")
             cs4.metric("Max (Most Similar)", f"{np.max(upper_vals):.2f}")
-
-        # ══════════════════════════════════════════════════════════════════════
-        # PAIRING RECOMMENDATIONS
-        # ══════════════════════════════════════════════════════════════════════
-        st.markdown("---")
-        st.header("Best Diversification Pairs")
-        st.markdown("*Strategy pairs with low excess return correlation and complementary factor exposures — combining them may reduce factor-driven drawdowns.*")
-
-        pairings = find_pairings(corr_matrix, peer_df, fcols)
-
-        if pairings:
-            pair_html = '<div class="pair-section">'
-            for idx, p in enumerate(pairings, 1):
-                s1_short = _abbrev_strategy(p["s1"])
-                s2_short = _abbrev_strategy(p["s2"])
-                rho = p["correlation"]
-                corr_cls = "corr-neg" if rho < 0.2 else ("corr-low" if rho < 0.5 else "corr-med")
-
-                pair_html += f'<div class="pair-card">'
-
-                # ── Header: names + correlation ──────────────────────────────
-                pair_html += f'<div class="pair-header">'
-                pair_html += (
-                    f'<div class="pair-names" style="display:flex;align-items:flex-start;">'
-                    f'  <span class="pair-rank">{idx}</span>'
-                    f'  <div>'
-                    f'    <div class="pair-label">Best Diversification Pair</div>'
-                    f'    <div class="pair-strat">{s1_short}</div>'
-                    f'    <div class="pair-strat" style="color:{C["neut"]};">+ {s2_short}</div>'
-                    f'  </div>'
-                    f'</div>'
-                )
-                pair_html += (
-                    f'<div class="pair-corr">'
-                    f'  <div class="corr-label">Excess Correlation</div>'
-                    f'  <div class="corr-value {corr_cls}">{rho:.2f}</div>'
-                    f'</div>'
-                )
-                pair_html += '</div>'  # pair-header
-
-                # ── Factor tilt rows ─────────────────────────────────────────
-                all_exposures = p["opposing"] + p.get("different_magnitude", [])
-                # Sort by magnitude of difference
-                all_exposures.sort(key=lambda d: abs(d["s1_beta"] - d["s2_beta"]), reverse=True)
-                if all_exposures:
-                    pair_html += '<div class="pair-tilts">'
-                    for exp in all_exposures[:4]:
-                        s1_tilt = _tilt_label(exp["raw_factor"], exp["s1_beta"])
-                        s2_tilt = _tilt_label(exp["raw_factor"], exp["s2_beta"])
-                        s1_cls = "tilt-pos" if exp["s1_beta"] > 0 else "tilt-neg"
-                        s2_cls = "tilt-pos" if exp["s2_beta"] > 0 else "tilt-neg"
-                        opposing = exp["s1_beta"] * exp["s2_beta"] < 0
-                        pair_html += (
-                            f'<div class="tilt-row">'
-                            f'  <div class="tilt-factor-name">{exp["factor"]}</div>'
-                            f'  <div class="tilt-strats">'
-                            f'    <div class="tilt-strat">'
-                            f'      <div class="tilt-strat-name">{s1_short}</div>'
-                            f'      <div class="tilt-strat-label {s1_cls}">{s1_tilt}</div>'
-                            f'      <div class="tilt-strat-beta">Tilt: {exp["s1_beta"]:+.3f}</div>'
-                            f'    </div>'
-                            f'    <div class="tilt-strat">'
-                            f'      <div class="tilt-strat-name">{s2_short}</div>'
-                            f'      <div class="tilt-strat-label {s2_cls}">{s2_tilt}</div>'
-                            f'      <div class="tilt-strat-beta">Tilt: {exp["s2_beta"]:+.3f}</div>'
-                            f'    </div>'
-                            f'  </div>'
-                            f'</div>'
-                        )
-                    pair_html += '</div>'
-
-                # ── Rationale chip ───────────────────────────────────────────
-                if rho < 0:
-                    rationale = "Negative correlation — these strategies tend to move in opposite directions, providing strong diversification."
-                elif rho < 0.3:
-                    rationale = "Very low correlation — combining these strategies should meaningfully reduce portfolio-level drawdowns."
-                elif rho < 0.5:
-                    rationale = "Low correlation — moderate diversification benefit when paired together."
-                else:
-                    rationale = "Different factor profiles provide some diversification despite moderate correlation."
-                pair_html += (
-                    f'<div class="pair-rationale">'
-                    f'  <div class="pair-chip" style="flex:1;">'
-                    f'    <div class="chip-label">Why This Pair</div>'
-                    f'    <div>{rationale}</div>'
-                    f'  </div>'
-                    f'</div>'
-                )
-
-                # ── Blended 50/50 performance ────────────────────────────────
-                bstats = compute_blend_stats(sdf_w, p["s1"], p["s2"], window_label)
-                if bstats:
-                    def _best(vals, higher_better=True):
-                        """Return tuple of CSS classes for (s1, s2, blend) — highlight the best."""
-                        classes = ["", "", ""]
-                        if higher_better:
-                            bi = int(np.argmax(vals))
-                        else:
-                            bi = int(np.argmin([abs(v) for v in vals]))
-                        classes[bi] = " blend-best"
-                        return classes
-
-                    ret_cls = _best(bstats["ann_ret"], True)
-                    vol_cls = _best(bstats["ann_vol"], False)
-                    dd_cls = _best(bstats["max_dd"], False)
-                    hit_cls = _best(bstats["hit_rate"], True)
-
-                    pair_html += (
-                        f'<div class="blend-section">'
-                        f'  <div class="blend-title">Historical 50/50 Blend ({bstats["months"]} months)</div>'
-                        f'  <div class="blend-grid">'
-                        # Header row
-                        f'    <div class="blend-hdr"></div>'
-                        f'    <div class="blend-hdr" style="text-align:right;">{s1_short}</div>'
-                        f'    <div class="blend-hdr" style="text-align:right;">{s2_short}</div>'
-                        f'    <div class="blend-hdr blend-highlight" style="text-align:right;">50/50 Blend</div>'
-                        # Ann. excess return
-                        f'    <div class="blend-metric">Ann. Excess Return</div>'
-                        f'    <div class="blend-val{ret_cls[0]}">{bstats["ann_ret"][0]:+.2%}</div>'
-                        f'    <div class="blend-val{ret_cls[1]}">{bstats["ann_ret"][1]:+.2%}</div>'
-                        f'    <div class="blend-val blend-highlight{ret_cls[2]}">{bstats["ann_ret"][2]:+.2%}</div>'
-                        # Ann. volatility
-                        f'    <div class="blend-metric">Tracking Error</div>'
-                        f'    <div class="blend-val{vol_cls[0]}">{bstats["ann_vol"][0]:.2%}</div>'
-                        f'    <div class="blend-val{vol_cls[1]}">{bstats["ann_vol"][1]:.2%}</div>'
-                        f'    <div class="blend-val blend-highlight{vol_cls[2]}">{bstats["ann_vol"][2]:.2%}</div>'
-                        # Max drawdown
-                        f'    <div class="blend-metric">Max Drawdown</div>'
-                        f'    <div class="blend-val{dd_cls[0]}">{bstats["max_dd"][0]:.1%}</div>'
-                        f'    <div class="blend-val{dd_cls[1]}">{bstats["max_dd"][1]:.1%}</div>'
-                        f'    <div class="blend-val blend-highlight{dd_cls[2]}">{bstats["max_dd"][2]:.1%}</div>'
-                        # Hit rate
-                        f'    <div class="blend-metric">Monthly Hit Rate</div>'
-                        f'    <div class="blend-val{hit_cls[0]}">{bstats["hit_rate"][0]:.0f}%</div>'
-                        f'    <div class="blend-val{hit_cls[1]}">{bstats["hit_rate"][1]:.0f}%</div>'
-                        f'    <div class="blend-val blend-highlight{hit_cls[2]}">{bstats["hit_rate"][2]:.0f}%</div>'
-                        f'  </div>'
-                        f'</div>'
-                    )
-
-                pair_html += '</div>'  # pair-card
-
-            pair_html += '</div>'
-            st.markdown(pair_html, unsafe_allow_html=True)
-        else:
-            st.info("Not enough strategy overlap to generate pairing recommendations.")
-
     else:
         st.info("Not enough overlapping data to compute correlations (need 2+ strategies with 24+ months).")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # CUSTOM PAIR BUILDER
+    # FACTOR TILT COMPARISON
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.header("How Do These Managers' Factor Tilts Compare?")
+    st.markdown("*Select factors to see where each manager is positioned.*")
+
+    _mf_cols = [fc for fc in fcols if f"mf_{fc}" in peer_df.columns]
+    if _mf_cols:
+        _tilt_view = st.radio("View", ["One Factor", "Two Factors"], horizontal=True, key="peer_tilt_view")
+        if _tilt_view == "One Factor":
+            _sel_f_disp = st.selectbox("Factor", [fl(f) for f in _mf_cols], key="peer_tilt_f1")
+            _sel_f_raw = _mf_cols[[fl(f) for f in _mf_cols].index(_sel_f_disp)]
+            fig_fb = ch_factor_bars(peer_df, _sel_f_raw, view_type="mf")
+            if fig_fb: st.plotly_chart(fig_fb, width='stretch')
+        else:
+            _fc1_col, _fc2_col = st.columns(2)
+            with _fc1_col:
+                _sf1_disp = st.selectbox("Factor X", [fl(f) for f in _mf_cols], key="peer_scatter_f1")
+                _sf1_raw = _mf_cols[[fl(f) for f in _mf_cols].index(_sf1_disp)]
+            with _fc2_col:
+                _sf2_idx = 1 if len(_mf_cols) > 1 else 0
+                _sf2_disp = st.selectbox("Factor Y", [fl(f) for f in _mf_cols], index=_sf2_idx, key="peer_scatter_f2")
+                _sf2_raw = _mf_cols[[fl(f) for f in _mf_cols].index(_sf2_disp)]
+            fig_sc = ch_factor_scatter(peer_df, _sf1_raw, _sf2_raw, view_type="mf")
+            if fig_sc: st.plotly_chart(fig_sc, width='stretch')
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # CUSTOM PAIR BUILDER (above recommended pairs)
     # ══════════════════════════════════════════════════════════════════════════
     st.markdown("---")
     st.header("Custom Pair Builder")
@@ -2081,19 +1899,17 @@ elif "\U0001f50d" in page:
     if len(peer_strats) >= 2:
         cb1, cb2 = st.columns(2)
         with cb1:
-            cust_s1 = st.selectbox("Strategy A", peer_strats, index=0, key="cust_s1")
+            cust_s1 = st.selectbox("Strategy A", peer_strats, index=0,
+                                   format_func=_display_name, key="cust_s1")
 
-        # Compute top 3 recommended partners for Strategy A using pairing logic
-        rec_partners = get_recommended_partners(cust_s1, corr_matrix, peer_df, fcols, n=3)
-        # Build Strategy B list: recommended partners first, then remaining (excluding A)
+        rec_partners = get_recommended_partners(cust_s1, corr_matrix, peer_df, fcols, n=3) if not corr_matrix.empty else []
         other_strats = [s for s in peer_strats if s not in rec_partners and s != cust_s1]
         s2_options = rec_partners + other_strats
         rec_rank = {s: i + 1 for i, s in enumerate(rec_partners)}
 
         def _fmt_s2(s, _rr=rec_rank):
-            if s in _rr:
-                return f"\u2605 Best Pair #{_rr[s]}: {_abbrev_strategy(s)}"
-            return _abbrev_strategy(s)
+            if s in _rr: return f"\u2605 Best Pair #{_rr[s]}: {_display_name(s)}"
+            return _display_name(s)
 
         with cb2:
             cust_s2 = st.selectbox("Strategy B", s2_options, index=0,
@@ -2102,58 +1918,39 @@ elif "\U0001f50d" in page:
         if cust_s1 == cust_s2:
             st.warning("Select two different strategies to compare.")
         else:
-            cs1_short = _abbrev_strategy(cust_s1)
-            cs2_short = _abbrev_strategy(cust_s2)
-
-            # Correlation
+            cs1_short = _display_name(cust_s1)
+            cs2_short = _display_name(cust_s2)
             cust_rho = np.nan
             if not corr_matrix.empty and cust_s1 in corr_matrix.columns and cust_s2 in corr_matrix.columns:
                 cust_rho = corr_matrix.loc[cust_s1, cust_s2]
 
-            # Factor exposures
             cr1 = peer_df[peer_df["strategy"]==cust_s1]
             cr2 = peer_df[peer_df["strategy"]==cust_s2]
-
             cust_exposures = []
             if not cr1.empty and not cr2.empty:
-                cr1, cr2 = cr1.iloc[0], cr2.iloc[0]
+                cr1r, cr2r = cr1.iloc[0], cr2.iloc[0]
                 for fc in fcols:
                     mf_col = f"mf_{fc}"
-                    v1 = cr1.get(mf_col, np.nan)
-                    v2 = cr2.get(mf_col, np.nan)
+                    v1 = cr1r.get(mf_col, np.nan)
+                    v2 = cr2r.get(mf_col, np.nan)
                     if pd.notna(v1) and pd.notna(v2) and abs(v1 - v2) > 0.005:
-                        cust_exposures.append({"factor": fl(fc), "raw_factor": fc,
-                                               "s1_beta": v1, "s2_beta": v2})
+                        cust_exposures.append({"factor": fl(fc), "raw_factor": fc, "s1_beta": v1, "s2_beta": v2})
                 cust_exposures.sort(key=lambda d: abs(d["s1_beta"] - d["s2_beta"]), reverse=True)
 
-            # Blended stats
             cust_bstats = compute_blend_stats(sdf_w, cust_s1, cust_s2, window_label)
-
-            # ── Render card ──────────────────────────────────────────────────
-            corr_cls = "corr-neg" if cust_rho < 0.2 else ("corr-low" if cust_rho < 0.5 else "corr-med")
-            cust_html = '<div class="pair-card">'
-
-            # Header
-            cust_html += '<div class="pair-header">'
-            cust_html += (
-                f'<div class="pair-names">'
-                f'  <div>'
-                f'    <div class="pair-label">Custom Pair Analysis</div>'
-                f'    <div class="pair-strat">{cs1_short}</div>'
-                f'    <div class="pair-strat" style="color:{C["neut"]};">+ {cs2_short}</div>'
-                f'  </div>'
-                f'</div>'
+            corr_cls = "corr-neg" if (not np.isnan(cust_rho) and cust_rho < 0.2) else ("corr-low" if (not np.isnan(cust_rho) and cust_rho < 0.5) else "corr-med")
+            cust_html = (
+                f'<div class="pair-card"><div class="pair-header">'
+                f'<div class="pair-names"><div>'
+                f'<div class="pair-label">Custom Pair Analysis</div>'
+                f'<div class="pair-strat">{cs1_short}</div>'
+                f'<div class="pair-strat" style="color:{C["neut"]};">+ {cs2_short}</div>'
+                f'</div></div>'
             )
             if not np.isnan(cust_rho):
-                cust_html += (
-                    f'<div class="pair-corr">'
-                    f'  <div class="corr-label">Excess Correlation</div>'
-                    f'  <div class="corr-value {corr_cls}">{cust_rho:.2f}</div>'
-                    f'</div>'
-                )
-            cust_html += '</div>'  # pair-header
-
-            # Factor tilts
+                cust_html += (f'<div class="pair-corr"><div class="corr-label">Excess Correlation</div>'
+                              f'<div class="corr-value {corr_cls}">{cust_rho:.2f}</div></div>')
+            cust_html += '</div>'
             if cust_exposures:
                 cust_html += '<div class="pair-tilts">'
                 for exp in cust_exposures[:6]:
@@ -2162,74 +1959,174 @@ elif "\U0001f50d" in page:
                     s1_cls = "tilt-pos" if exp["s1_beta"] > 0 else "tilt-neg"
                     s2_cls = "tilt-pos" if exp["s2_beta"] > 0 else "tilt-neg"
                     cust_html += (
-                        f'<div class="tilt-row">'
-                        f'  <div class="tilt-factor-name">{exp["factor"]}</div>'
-                        f'  <div class="tilt-strats">'
-                        f'    <div class="tilt-strat">'
-                        f'      <div class="tilt-strat-name">{cs1_short}</div>'
-                        f'      <div class="tilt-strat-label {s1_cls}">{s1_tilt}</div>'
-                        f'      <div class="tilt-strat-beta">Beta: {exp["s1_beta"]:+.3f}</div>'
-                        f'    </div>'
-                        f'    <div class="tilt-strat">'
-                        f'      <div class="tilt-strat-name">{cs2_short}</div>'
-                        f'      <div class="tilt-strat-label {s2_cls}">{s2_tilt}</div>'
-                        f'      <div class="tilt-strat-beta">Beta: {exp["s2_beta"]:+.3f}</div>'
-                        f'    </div>'
-                        f'  </div>'
-                        f'</div>'
+                        f'<div class="tilt-row"><div class="tilt-factor-name">{exp["factor"]}</div>'
+                        f'<div class="tilt-strats">'
+                        f'<div class="tilt-strat"><div class="tilt-strat-name">{cs1_short}</div>'
+                        f'<div class="tilt-strat-label {s1_cls}">{s1_tilt}</div>'
+                        f'<div class="tilt-strat-beta">Tilt: {exp["s1_beta"]:+.3f}</div></div>'
+                        f'<div class="tilt-strat"><div class="tilt-strat-name">{cs2_short}</div>'
+                        f'<div class="tilt-strat-label {s2_cls}">{s2_tilt}</div>'
+                        f'<div class="tilt-strat-beta">Tilt: {exp["s2_beta"]:+.3f}</div></div>'
+                        f'</div></div>'
                     )
                 cust_html += '</div>'
-
-            # Blended performance
             if cust_bstats:
                 def _best_c(vals, higher_better=True):
                     classes = ["", "", ""]
-                    if higher_better:
-                        bi = int(np.argmax(vals))
-                    else:
-                        bi = int(np.argmin([abs(v) for v in vals]))
+                    bi = int(np.argmax(vals)) if higher_better else int(np.argmin([abs(v) for v in vals]))
                     classes[bi] = " blend-best"
                     return classes
-
-                ret_cls = _best_c(cust_bstats["ann_ret"], True)
+                ret_cls = _best_c(cust_bstats["ann_ret"])
                 vol_cls = _best_c(cust_bstats["ann_vol"], False)
                 dd_cls = _best_c(cust_bstats["max_dd"], False)
-                hit_cls = _best_c(cust_bstats["hit_rate"], True)
-
+                hit_cls = _best_c(cust_bstats["hit_rate"])
                 cust_html += (
-                    f'<div class="blend-section">'
-                    f'  <div class="blend-title">Historical 50/50 Blend ({cust_bstats["months"]} months)</div>'
-                    f'  <div class="blend-grid">'
-                    f'    <div class="blend-hdr"></div>'
-                    f'    <div class="blend-hdr" style="text-align:right;">{cs1_short}</div>'
-                    f'    <div class="blend-hdr" style="text-align:right;">{cs2_short}</div>'
-                    f'    <div class="blend-hdr blend-highlight" style="text-align:right;">50/50 Blend</div>'
-                    f'    <div class="blend-metric">Ann. Excess Return</div>'
-                    f'    <div class="blend-val{ret_cls[0]}">{cust_bstats["ann_ret"][0]:+.2%}</div>'
-                    f'    <div class="blend-val{ret_cls[1]}">{cust_bstats["ann_ret"][1]:+.2%}</div>'
-                    f'    <div class="blend-val blend-highlight{ret_cls[2]}">{cust_bstats["ann_ret"][2]:+.2%}</div>'
-                    f'    <div class="blend-metric">Tracking Error</div>'
-                    f'    <div class="blend-val{vol_cls[0]}">{cust_bstats["ann_vol"][0]:.2%}</div>'
-                    f'    <div class="blend-val{vol_cls[1]}">{cust_bstats["ann_vol"][1]:.2%}</div>'
-                    f'    <div class="blend-val blend-highlight{vol_cls[2]}">{cust_bstats["ann_vol"][2]:.2%}</div>'
-                    f'    <div class="blend-metric">Max Drawdown</div>'
-                    f'    <div class="blend-val{dd_cls[0]}">{cust_bstats["max_dd"][0]:.1%}</div>'
-                    f'    <div class="blend-val{dd_cls[1]}">{cust_bstats["max_dd"][1]:.1%}</div>'
-                    f'    <div class="blend-val blend-highlight{dd_cls[2]}">{cust_bstats["max_dd"][2]:.1%}</div>'
-                    f'    <div class="blend-metric">Monthly Hit Rate</div>'
-                    f'    <div class="blend-val{hit_cls[0]}">{cust_bstats["hit_rate"][0]:.0f}%</div>'
-                    f'    <div class="blend-val{hit_cls[1]}">{cust_bstats["hit_rate"][1]:.0f}%</div>'
-                    f'    <div class="blend-val blend-highlight{hit_cls[2]}">{cust_bstats["hit_rate"][2]:.0f}%</div>'
-                    f'  </div>'
-                    f'</div>'
+                    f'<div class="blend-section"><div class="blend-title">Historical 50/50 Blend ({cust_bstats["months"]} months)</div>'
+                    f'<div class="blend-grid">'
+                    f'<div class="blend-hdr"></div><div class="blend-hdr" style="text-align:right;">{cs1_short}</div>'
+                    f'<div class="blend-hdr" style="text-align:right;">{cs2_short}</div>'
+                    f'<div class="blend-hdr blend-highlight" style="text-align:right;">50/50 Blend</div>'
+                    f'<div class="blend-metric">Ann. Excess Return</div>'
+                    f'<div class="blend-val{ret_cls[0]}">{cust_bstats["ann_ret"][0]:+.2%}</div>'
+                    f'<div class="blend-val{ret_cls[1]}">{cust_bstats["ann_ret"][1]:+.2%}</div>'
+                    f'<div class="blend-val blend-highlight{ret_cls[2]}">{cust_bstats["ann_ret"][2]:+.2%}</div>'
+                    f'<div class="blend-metric">Tracking Error</div>'
+                    f'<div class="blend-val{vol_cls[0]}">{cust_bstats["ann_vol"][0]:.2%}</div>'
+                    f'<div class="blend-val{vol_cls[1]}">{cust_bstats["ann_vol"][1]:.2%}</div>'
+                    f'<div class="blend-val blend-highlight{vol_cls[2]}">{cust_bstats["ann_vol"][2]:.2%}</div>'
+                    f'<div class="blend-metric">Max Drawdown</div>'
+                    f'<div class="blend-val{dd_cls[0]}">{cust_bstats["max_dd"][0]:.1%}</div>'
+                    f'<div class="blend-val{dd_cls[1]}">{cust_bstats["max_dd"][1]:.1%}</div>'
+                    f'<div class="blend-val blend-highlight{dd_cls[2]}">{cust_bstats["max_dd"][2]:.1%}</div>'
+                    f'<div class="blend-metric">Monthly Hit Rate</div>'
+                    f'<div class="blend-val{hit_cls[0]}">{cust_bstats["hit_rate"][0]:.0f}%</div>'
+                    f'<div class="blend-val{hit_cls[1]}">{cust_bstats["hit_rate"][1]:.0f}%</div>'
+                    f'<div class="blend-val blend-highlight{hit_cls[2]}">{cust_bstats["hit_rate"][2]:.0f}%</div>'
+                    f'</div></div>'
                 )
             else:
-                cust_html += f'<div class="ctx" style="margin-top:12px;">Not enough overlapping months to compute blended performance.</div>'
-
-            cust_html += '</div>'  # pair-card
+                cust_html += '<div class="ctx" style="margin-top:12px;">Not enough overlapping months to compute blended performance.</div>'
+            cust_html += '</div>'
             st.markdown(cust_html, unsafe_allow_html=True)
     else:
         st.info("Need at least 2 strategies in the peer group to build custom pairs.")
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # BEST DIVERSIFICATION PAIRS
+    # ══════════════════════════════════════════════════════════════════════════
+    if not corr_matrix.empty:
+        st.markdown("---")
+        st.header("Best Diversification Pairs")
+        st.markdown("*Strategy pairs with low excess return correlation and complementary factor exposures.*")
+
+        pairings = find_pairings(corr_matrix, peer_df, fcols)
+        if pairings:
+            pair_html = '<div class="pair-section">'
+            for idx, p in enumerate(pairings[:3], 1):
+                s1_short = _display_name(p["s1"])
+                s2_short = _display_name(p["s2"])
+                rho = p["correlation"]
+                corr_cls = "corr-neg" if rho < 0.2 else ("corr-low" if rho < 0.5 else "corr-med")
+                pair_html += f'<div class="pair-card"><div class="pair-header">'
+                pair_html += (
+                    f'<div class="pair-names" style="display:flex;align-items:flex-start;">'
+                    f'<span class="pair-rank">{idx}</span>'
+                    f'<div><div class="pair-label">Best Diversification Pair</div>'
+                    f'<div class="pair-strat">{s1_short}</div>'
+                    f'<div class="pair-strat" style="color:{C["neut"]};">+ {s2_short}</div>'
+                    f'</div></div>'
+                )
+                pair_html += (
+                    f'<div class="pair-corr"><div class="corr-label">Excess Correlation</div>'
+                    f'<div class="corr-value {corr_cls}">{rho:.2f}</div></div>'
+                )
+                pair_html += '</div>'
+                all_exposures = p["opposing"] + p.get("different_magnitude", [])
+                all_exposures.sort(key=lambda d: abs(d["s1_beta"] - d["s2_beta"]), reverse=True)
+                if all_exposures:
+                    pair_html += '<div class="pair-tilts">'
+                    for exp in all_exposures[:2]:
+                        s1_tilt = _tilt_label(exp["raw_factor"], exp["s1_beta"])
+                        s2_tilt = _tilt_label(exp["raw_factor"], exp["s2_beta"])
+                        s1_cls = "tilt-pos" if exp["s1_beta"] > 0 else "tilt-neg"
+                        s2_cls = "tilt-pos" if exp["s2_beta"] > 0 else "tilt-neg"
+                        pair_html += (
+                            f'<div class="tilt-row"><div class="tilt-factor-name">{exp["factor"]}</div>'
+                            f'<div class="tilt-strats">'
+                            f'<div class="tilt-strat"><div class="tilt-strat-name">{s1_short}</div>'
+                            f'<div class="tilt-strat-label {s1_cls}">{s1_tilt}</div>'
+                            f'<div class="tilt-strat-beta">Tilt: {exp["s1_beta"]:+.3f}</div></div>'
+                            f'<div class="tilt-strat"><div class="tilt-strat-name">{s2_short}</div>'
+                            f'<div class="tilt-strat-label {s2_cls}">{s2_tilt}</div>'
+                            f'<div class="tilt-strat-beta">Tilt: {exp["s2_beta"]:+.3f}</div></div>'
+                            f'</div></div>'
+                        )
+                    pair_html += '</div>'
+                bstats = compute_blend_stats(sdf_w, p["s1"], p["s2"], window_label)
+                if bstats:
+                    def _best(vals, higher_better=True):
+                        classes = ["", "", ""]
+                        bi = int(np.argmax(vals)) if higher_better else int(np.argmin([abs(v) for v in vals]))
+                        classes[bi] = " blend-best"
+                        return classes
+                    ret_cls = _best(bstats["ann_ret"])
+                    vol_cls = _best(bstats["ann_vol"], False)
+                    dd_cls = _best(bstats["max_dd"], False)
+                    hit_cls = _best(bstats["hit_rate"])
+                    pair_html += (
+                        f'<div class="blend-section"><div class="blend-title">Historical 50/50 Blend ({bstats["months"]} months)</div>'
+                        f'<div class="blend-grid">'
+                        f'<div class="blend-hdr"></div><div class="blend-hdr" style="text-align:right;">{s1_short}</div>'
+                        f'<div class="blend-hdr" style="text-align:right;">{s2_short}</div>'
+                        f'<div class="blend-hdr blend-highlight" style="text-align:right;">50/50 Blend</div>'
+                        f'<div class="blend-metric">Ann. Excess Return</div>'
+                        f'<div class="blend-val{ret_cls[0]}">{bstats["ann_ret"][0]:+.2%}</div>'
+                        f'<div class="blend-val{ret_cls[1]}">{bstats["ann_ret"][1]:+.2%}</div>'
+                        f'<div class="blend-val blend-highlight{ret_cls[2]}">{bstats["ann_ret"][2]:+.2%}</div>'
+                        f'<div class="blend-metric">Tracking Error</div>'
+                        f'<div class="blend-val{vol_cls[0]}">{bstats["ann_vol"][0]:.2%}</div>'
+                        f'<div class="blend-val{vol_cls[1]}">{bstats["ann_vol"][1]:.2%}</div>'
+                        f'<div class="blend-val blend-highlight{vol_cls[2]}">{bstats["ann_vol"][2]:.2%}</div>'
+                        f'<div class="blend-metric">Max Drawdown</div>'
+                        f'<div class="blend-val{dd_cls[0]}">{bstats["max_dd"][0]:.1%}</div>'
+                        f'<div class="blend-val{dd_cls[1]}">{bstats["max_dd"][1]:.1%}</div>'
+                        f'<div class="blend-val blend-highlight{dd_cls[2]}">{bstats["max_dd"][2]:.1%}</div>'
+                        f'<div class="blend-metric">Monthly Hit Rate</div>'
+                        f'<div class="blend-val{hit_cls[0]}">{bstats["hit_rate"][0]:.0f}%</div>'
+                        f'<div class="blend-val{hit_cls[1]}">{bstats["hit_rate"][1]:.0f}%</div>'
+                        f'<div class="blend-val blend-highlight{hit_cls[2]}">{bstats["hit_rate"][2]:.0f}%</div>'
+                        f'</div></div>'
+                    )
+                pair_html += '</div>'
+            pair_html += '</div>'
+            st.markdown(pair_html, unsafe_allow_html=True)
+        else:
+            st.info("Not enough strategy overlap to generate pairing recommendations.")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # FULL DATA TABLE (expander at bottom)
+    # ══════════════════════════════════════════════════════════════════════════
+    with st.expander("\U0001f4cb Full Factor Sensitivity Table"):
+        _tbl_view = st.radio("Sensitivity type", ["Multi-Factor Sensitivity", "Standardized Sensitivity"],
+                             horizontal=True, key="peer_table_view")
+        tbl = peer_df[["strategy", "months", "r2"]].copy()
+        tbl["Strategy"] = tbl["strategy"].apply(_display_name)
+        tbl["% Explained"] = tbl["r2"].map(lambda x: f"{x*100:.1f}%" if pd.notna(x) else "")
+        if "Multi" in _tbl_view:
+            for fc in fcols:
+                col = f"mf_{fc}"
+                if col in peer_df.columns:
+                    tbl[fl(fc)] = peer_df[col].map(lambda x: f"{x:+.3f}" if pd.notna(x) else "")
+        else:
+            for fc in fcols:
+                col = f"std_{fc}"
+                if col in peer_df.columns:
+                    tbl[fl(fc)] = peer_df[col].map(lambda x: f"{x:+.3f}" if pd.notna(x) else "")
+        if "alpha_bps" in peer_df.columns:
+            tbl["Monthly Value-Add (bps)"] = peer_df["alpha_bps"].map(lambda x: f"{x:+.1f}" if pd.notna(x) else "")
+        if "tracking_error" in peer_df.columns:
+            tbl["Tracking Error"] = peer_df["tracking_error"].map(lambda x: f"{x:.2%}" if pd.notna(x) else "")
+        tbl = tbl.drop(columns=["strategy", "r2", "months"])
+        st.dataframe(tbl, width='stretch', hide_index=True, height=min(800, 40 + len(tbl) * 35))
 st.markdown("---")
 st.caption("Manager Research Dashboard")
