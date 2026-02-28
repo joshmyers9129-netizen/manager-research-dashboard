@@ -110,6 +110,28 @@ def _abbrev_strategy(full_name):
     return f"{firm_first} {short}".strip()
 
 
+def _display_name(full_name: str) -> str:
+    """Return a readable display name from 'Firm Name | Product Name'.
+
+    - If firm's first word already appears in product name → return product only.
+    - Otherwise → prepend first word of firm to product name.
+    - Truncate to 42 chars + ellipsis if result exceeds 45 characters.
+    - If no pipe in full_name, return as-is (truncated to 45 chars).
+    """
+    if "|" not in full_name:
+        return full_name if len(full_name) <= 45 else full_name[:42] + "\u2026"
+    firm, product = full_name.split("|", 1)
+    firm, product = firm.strip(), product.strip()
+    firm_first = firm.split()[0] if firm else ""
+    if firm_first and firm_first.lower() in product.lower():
+        display = product
+    else:
+        display = f"{firm_first} {product}".strip() if firm_first else product
+    if len(display) > 45:
+        display = display[:42] + "\u2026"
+    return display
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  UTILITIES
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -218,13 +240,15 @@ def parse_evestment(fp):
             if not fm or not pr or fm.lower() in SKIP_FIRMS: continue
             bm = row.get("Benchmark","")
             bm = str(bm).strip() if pd.notna(bm) else ""
+            univ = row.get("Universe","")
+            univ = str(univ).strip() if pd.notna(univ) else ""
             sn = f"{fm} | {pr}"
             if sn in seen: continue
             seen.add(sn)
             for c, dt in cd.items():
                 v = row.get(c)
                 if pd.notna(v):
-                    try: recs.append({"date":dt,"strategy":sn,"excess_return":float(v),"firm_name":fm,"product_name":pr,"benchmark":bm})
+                    try: recs.append({"date":dt,"strategy":sn,"excess_return":float(v),"firm_name":fm,"product_name":pr,"benchmark":bm,"universe":univ})
                     except: pass
     if not recs: raise ValueError("No data extracted.")
     r = pd.DataFrame(recs); r["date"]=pd.to_datetime(r["date"]); return r
@@ -504,13 +528,70 @@ def rolling_betas(dates, excess, fdf, window=36):
     return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
 
 def subperiod_betas(excess, fdf, dates):
-    pds=[("Pre-2020",dates<"2020-01-01"),("2020-2021",(dates>="2020-01-01")&(dates<"2022-01-01")),("2022+",dates>="2022-01-01")]
-    fc=[c for c in fdf.columns if c!="date"]; recs=[]
-    for lbl,mask in pds:
-        if mask.sum()<12: continue
+    """Compute factor betas across dynamically determined subperiods.
+
+    Splits:
+      - >=10 years of data  → thirds (falls back to halves if any period <24 months)
+      - 6–9 years of data   → halves (skips if any period <24 months)
+      - <6 years of data    → returns empty DataFrame
+    Period boundaries are snapped to January 1 of the nearest year.
+    """
+    fc = [c for c in fdf.columns if c != "date"]
+    n = len(dates)
+    span_years = n / 12.0
+
+    if span_years < 6:
+        return pd.DataFrame()
+
+    start_dt = dates.min()
+    end_dt = dates.max()
+
+    def _snap_jan(dt):
+        """Snap timestamp to January 1 of the nearest year."""
+        return pd.Timestamp(year=dt.year + (1 if dt.month > 6 else 0), month=1, day=1)
+
+    def make_periods(n_splits):
+        """Return list of (label, boolean_mask) for n_splits equal periods."""
+        boundaries = []
+        for i in range(1, n_splits):
+            approx = start_dt + pd.DateOffset(months=round(n * i / n_splits))
+            snap = _snap_jan(approx)
+            # Clamp so each side always has room for ≥24 months
+            snap = max(snap, start_dt + pd.DateOffset(months=24))
+            snap = min(snap, end_dt - pd.DateOffset(months=23))
+            boundaries.append(snap)
+
+        periods = []
+        for i in range(n_splits):
+            lo = boundaries[i - 1] if i > 0 else None
+            hi = boundaries[i] if i < n_splits - 1 else None
+            if lo is None:
+                mask = dates < hi
+            elif hi is None:
+                mask = dates >= lo
+            else:
+                mask = (dates >= lo) & (dates < hi)
+            lo_yr = start_dt.year if lo is None else lo.year
+            hi_yr = end_dt.year if hi is None else (hi - pd.DateOffset(months=1)).year
+            periods.append((f"{lo_yr}\u2013{hi_yr}", mask))
+        return periods
+
+    splits_to_try = [3, 2] if span_years >= 10 else [2]
+    chosen = None
+    for n_splits in splits_to_try:
+        candidate = make_periods(n_splits)
+        if all(mask.sum() >= 24 for _, mask in candidate):
+            chosen = candidate
+            break
+
+    if chosen is None:
+        return pd.DataFrame()
+
+    recs = []
+    for lbl, mask in chosen:
         for f in fc:
-            r=_ols(excess[mask].values, fdf[f][mask].values)
-            recs.append({"period":lbl,"factor":f,"beta":r["beta"],"t":r["t"],"p":r["p"],"n_obs":int(mask.sum())})
+            r = _ols(excess[mask].values, fdf[f][mask].values)
+            recs.append({"period": lbl, "factor": f, "beta": r["beta"], "t": r["t"], "p": r["p"], "n_obs": int(mask.sum())})
     return pd.DataFrame(recs)
 
 
@@ -2087,12 +2168,14 @@ if "\U0001f4c4" in page:
     st.header("Exposure Stability")
     tab_r, tab_s = st.tabs(["\U0001f4c8 Rolling 36-Mo Betas", "\U0001f4ca Subperiod Check"])
     with tab_r:
-        r36 = rolling_betas(dates, excess, factors, 36)
+        _factors_no_cash = factors[[c for c in factors.columns if c.lower() != "cash"]]
+        r36 = rolling_betas(dates, excess, _factors_no_cash, 36)
         fr36 = ch_rolling(r36, 36)
         if fr36: st.plotly_chart(fr36, width='stretch')
     with tab_s:
         st.markdown("*Do betas hold across regimes, or are they period-specific?*")
-        spb = subperiod_betas(excess, factors, dates)
+        _factors_no_cash = factors[[c for c in factors.columns if c.lower() != "cash"]]
+        spb = subperiod_betas(excess, _factors_no_cash, dates)
         if not spb.empty:
             spb["Factor"] = spb["factor"].apply(fl)
             pivot = spb.pivot_table(index="Factor", columns="period", values="beta", aggfunc="first")
